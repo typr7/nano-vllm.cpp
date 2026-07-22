@@ -34,11 +34,12 @@ target_include_directories(cllm_core
 )
 
 target_link_libraries(cllm_core
+    PUBLIC
+        msgpack-cxx
     PRIVATE
         CUDA::cudart
         Threads::Threads
         cppzmq
-        msgpack-cxx
 )
 
 # Build the Python extension as _C.so. The Python interpreter is responsible
@@ -60,3 +61,19 @@ install(
     TARGETS cllm_pybind
     LIBRARY DESTINATION cllm
 )
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(engine_core_test
+        tests/engine_core_test.cpp
+    )
+
+    target_link_libraries(engine_core_test
+        PRIVATE
+            cllm_core
+            cppzmq
+    )
+
+    add_test(NAME engine_core_test COMMAND engine_core_test)
+endif()
