@@ -14,13 +14,19 @@ namespace cllm
 
 inline constexpr std::string_view ENGINE_CORE_READY{"READY"};
 
-enum class RequestType : std::uint8_t
+class ProtocolError: public std::runtime_error
+{
+    using std::runtime_error::runtime_error;
+};
+
+enum class RequestType: std::uint8_t
 {
     ADD = 0,
     SHUTDOWN = 1,
+    IO_ERROR = 2,
 };
 
-enum class OutputType : std::uint8_t
+enum class OutputType: std::uint8_t
 {
     OUTPUT = 0,
     ENGINE_CORE_DEAD = 1,

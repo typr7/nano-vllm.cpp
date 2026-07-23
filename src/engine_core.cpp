@@ -2,8 +2,10 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <msgpack.hpp>
@@ -11,6 +13,7 @@
 #include <zmq_addon.hpp>
 
 #include "engine_core.h"
+#include "logger.h"
 
 
 namespace cllm
@@ -18,34 +21,27 @@ namespace cllm
 namespace
 {
 
+struct IoThreadStartupState
+{
+    std::latch ready{2};
+    std::array<bool, 2> initialized{ false, false };
+};
+
 constexpr int SOCKET_HIGH_WATER_MARK = 1024;
 constexpr int SOCKET_TIMEOUT_MS = 100;
 constexpr int OUTPUT_LINGER_MS = 4000;
 
-RequestType parse_request_type(const zmq::message_t& frame)
-{
-    if (frame.size() != sizeof(std::uint8_t)) {
-        throw std::runtime_error("Request type frame must contain one byte");
-    }
-
-    const auto value = *static_cast<const std::uint8_t*>(frame.data());
-    switch (value) {
-    case static_cast<std::uint8_t>(RequestType::ADD):
-        return RequestType::ADD;
-    case static_cast<std::uint8_t>(RequestType::SHUTDOWN):
-        return RequestType::SHUTDOWN;
-    default:
-        throw std::runtime_error("Unknown request type");
-    }
-}
-
 EngineCoreRequest decode_request(const zmq::message_t& frame)
 {
-    const auto object = msgpack::unpack(
-        static_cast<const char*>(frame.data()),
-        frame.size()
-    );
-    return object.get().as<EngineCoreRequest>();
+    try {
+        const auto object = msgpack::unpack(
+            static_cast<const char*>(frame.data()),
+            frame.size()
+        );
+        return object.get().as<EngineCoreRequest>();
+    } catch (...) {
+        throw ProtocolError("invalid request payload");
+    }
 }
 
 void send_ready(const std::string& handshake_address)
@@ -62,39 +58,6 @@ void send_ready(const std::string& handshake_address)
     }
 }
 
-void send_output(zmq::socket_t& socket, const OutputMessage& message)
-{
-    const auto type = static_cast<std::uint8_t>(message.type);
-
-    if (message.type == OutputType::ENGINE_CORE_DEAD) {
-        if (message.payload) {
-            throw std::logic_error("ENGINE_CORE_DEAD cannot contain a payload");
-        }
-
-        const auto result = socket.send(zmq::buffer(&type, sizeof(type)));
-        if (!result) {
-            throw std::runtime_error("Failed to send ENGINE_CORE_DEAD");
-        }
-        return;
-    }
-
-    if (!message.payload) {
-        throw std::logic_error("OUTPUT must contain a payload");
-    }
-
-    msgpack::sbuffer payload;
-    msgpack::pack(payload, *message.payload);
-
-    const std::array<zmq::const_buffer, 2> frames{
-        zmq::const_buffer(&type, sizeof(type)),
-        zmq::const_buffer(payload.data(), payload.size()),
-    };
-    const auto result = zmq::send_multipart(socket, frames);
-    if (!result) {
-        throw std::runtime_error("Failed to send EngineCore output");
-    }
-}
-
 }
 
 EngineCore::EngineCore(
@@ -103,22 +66,44 @@ EngineCore::EngineCore(
 )
     : input_queue_{},
       output_queue_{},
-      io_error_mutex_{},
-      io_error_{},
-      io_ready_{2},
-      input_thread_{
-          [this, input_address = addresses.input_address](std::stop_token stop_token) {
-              process_input_socket(stop_token, input_address);
-          }
-      },
-      output_thread_{
-          [this, output_address = addresses.output_address](std::stop_token stop_token) {
-              process_output_socket(stop_token, output_address);
-          }
-      }
+      input_thread_{},
+      output_thread_{}
 {
-    io_ready_.wait();
-    rethrow_io_error();
+    auto startup = std::make_shared<IoThreadStartupState>();
+
+    input_thread_ = std::jthread(
+        [
+            this,
+            input_address = addresses.input_address,
+            startup
+        ](std::stop_token stop_token) {
+            process_input_socket(
+                stop_token,
+                input_address,
+                startup->ready,
+                startup->initialized[0]
+            );
+        }
+    );
+    output_thread_ = std::jthread(
+        [
+            this,
+            output_address = addresses.output_address,
+            startup
+        ](std::stop_token stop_token) {
+            process_output_socket(
+                stop_token,
+                output_address,
+                startup->ready,
+                startup->initialized[1]
+            );
+        }
+    );
+
+    startup->ready.wait();
+    if (!(startup->initialized[0] && startup->initialized[1])) {
+        throw std::runtime_error("failed to initialize io thread");
+    }
 }
 
 EngineCore::~EngineCore() noexcept
@@ -127,20 +112,21 @@ EngineCore::~EngineCore() noexcept
     if (input_thread_.joinable()) {
         input_thread_.join();
     }
-    input_queue_.close();
 
     output_queue_.close();
     if (output_thread_.joinable()) {
         output_thread_.join();
     }
+    input_queue_.close();
 }
 
 void EngineCore::process_input_socket(
     std::stop_token stop_token,
-    const std::string& input_address
+    const std::string& input_address,
+    std::latch& io_ready,
+    bool& initialized
 ) noexcept
 {
-    bool initialized = false;
     try {
         zmq::context_t context;
         zmq::socket_t socket(context, zmq::socket_type::pull);
@@ -151,7 +137,7 @@ void EngineCore::process_input_socket(
         socket.connect(input_address);
 
         initialized = true;
-        io_ready_.count_down();
+        io_ready.count_down();
 
         while (!stop_token.stop_requested()) {
             std::vector<zmq::message_t> frames;
@@ -163,42 +149,63 @@ void EngineCore::process_input_socket(
                 continue;
             }
 
-            const RequestType type = parse_request_type(frames.front());
-            switch (type) {
-            case RequestType::ADD:
-                if (frames.size() != 2) {
-                    throw std::runtime_error("ADD must contain one payload frame");
+            try {
+                const auto& req_type_frame = frames.front();
+                if (req_type_frame.size() != sizeof(std::uint8_t)) {
+                    throw ProtocolError("invalid request type byte size");
                 }
-                input_queue_.push(InputMessage{
-                    .type = type,
-                    .payload = decode_request(frames[1]),
-                });
-                break;
-            case RequestType::SHUTDOWN:
-                if (frames.size() != 1) {
-                    throw std::runtime_error("SHUTDOWN cannot contain a payload");
+
+                const auto req_type = *static_cast<const std::uint8_t*>(req_type_frame.data());
+
+                switch (req_type) {
+                    case static_cast<std::uint8_t>(RequestType::ADD): {
+                        if (frames.size() != 2) {
+                            throw ProtocolError("");
+                        }
+
+                        EngineCoreRequest req = decode_request(frames.back());
+                        input_queue_.push(InputMessage{
+                            .type = RequestType::ADD,
+                            .payload = std::move(req)
+                        });
+                        break;
+                    }
+                    case static_cast<std::uint8_t>(RequestType::SHUTDOWN): {
+                        input_queue_.push(InputMessage{
+                            .type = RequestType::SHUTDOWN,
+                            .payload = std::nullopt
+                        });
+                        return;
+                    }
+                    default: {
+                        throw ProtocolError("invalid request type");
+                    }
                 }
-                input_queue_.push(InputMessage{
-                    .type = type,
-                    .payload = std::nullopt,
-                });
-                return;
+            } catch (const ProtocolError& e) {
+                Logger::error(std::format("invalid request: {}, discarded.", e.what()));
+            } catch (...) {
+                throw;
             }
         }
     } catch (...) {
         if (!initialized) {
-            io_ready_.count_down();
+            io_ready.count_down();
+            return;
         }
-        report_io_error(std::current_exception());
+        input_queue_.push_front(InputMessage{
+            .type = RequestType::IO_ERROR,
+            .payload = std::nullopt
+        });
     }
 }
 
 void EngineCore::process_output_socket(
     std::stop_token stop_token,
-    const std::string& output_address
+    const std::string& output_address,
+    std::latch& io_ready,
+    bool& initialized
 ) noexcept
 {
-    bool initialized = false;
     try {
         zmq::context_t context;
         zmq::socket_t socket(context, zmq::socket_type::push);
@@ -210,42 +217,51 @@ void EngineCore::process_output_socket(
         socket.connect(output_address);
 
         initialized = true;
-        io_ready_.count_down();
+        io_ready.count_down();
 
         while (auto message = output_queue_.pop(stop_token)) {
-            send_output(socket, *message);
-            if (message->type == OutputType::ENGINE_CORE_DEAD) {
-                return;
+            OutputType type = message->type;
+            switch (type) {
+                case OutputType::OUTPUT: {
+                    if (!message->payload) {
+                        throw ProtocolError("invalid output");
+                    }
+
+                    msgpack::sbuffer payload;
+                    msgpack::pack(payload, *message->payload);
+
+                    const std::array<zmq::const_buffer, 2> frames{
+                        zmq::const_buffer(&type, sizeof(type)),
+                        zmq::const_buffer(payload.data(), payload.size())
+                    };
+
+                    const auto result = zmq::send_multipart(socket, frames);
+                    if (!result) {
+                        throw ProtocolError("failed to send OUTPUT");
+                    }
+                    break;
+                }
+                case OutputType::ENGINE_CORE_DEAD: {
+                    const auto result = socket.send(zmq::const_buffer(&type, sizeof(type)));
+                    if (!result) {
+                        throw ProtocolError("failed to send ENGINE_CORE_DEAD");
+                    }
+                    return;
+                }
+                default: {
+                    throw std::runtime_error("invalid output type");
+                }
             }
         }
     } catch (...) {
         if (!initialized) {
-            io_ready_.count_down();
+            io_ready.count_down();
+            return;
         }
-        report_io_error(std::current_exception());
-    }
-}
-
-void EngineCore::report_io_error(std::exception_ptr error) noexcept
-{
-    {
-        const std::lock_guard lock(io_error_mutex_);
-        if (!io_error_) {
-            io_error_ = error;
-        }
-    }
-    input_queue_.close();
-}
-
-void EngineCore::rethrow_io_error()
-{
-    std::exception_ptr error;
-    {
-        const std::lock_guard lock(io_error_mutex_);
-        error = io_error_;
-    }
-    if (error) {
-        std::rethrow_exception(error);
+        input_queue_.push_front(InputMessage{
+            .type = RequestType::IO_ERROR,
+            .payload = std::nullopt
+        });
     }
 }
 
@@ -261,20 +277,21 @@ void EngineCore::send_engine_core_dead()
 void EngineCore::run_busy_loop()
 {
     while (true) {
-        rethrow_io_error();
         auto message = input_queue_.pop();
-        rethrow_io_error();
-
         if (!message) {
             return;
         }
 
         switch (message->type) {
-        case RequestType::ADD:
-            // The scheduler will consume the request in the inference implementation.
-            break;
-        case RequestType::SHUTDOWN:
-            return;
+            case RequestType::ADD: {
+                break;
+            }
+            case RequestType::SHUTDOWN: {
+                return;
+            }
+            case RequestType::IO_ERROR: {
+                throw std::runtime_error("error from io thread");
+            }
         }
     }
 }

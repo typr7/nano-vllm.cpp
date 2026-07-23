@@ -1,14 +1,12 @@
 #pragma once
 
-#include <exception>
 #include <latch>
-#include <mutex>
 #include <string>
 #include <thread>
 
 #include "config.h"
 #include "protocol.h"
-#include "queue.h"
+#include "queue.hpp"
 
 
 namespace cllm
@@ -27,24 +25,22 @@ public:
 private:
     void process_input_socket(
         std::stop_token stop_token,
-        const std::string& input_address
+        const std::string& input_address,
+        std::latch& io_ready,
+        bool& initialized
     ) noexcept;
     void process_output_socket(
         std::stop_token stop_token,
-        const std::string& output_address
+        const std::string& output_address,
+        std::latch& io_ready,
+        bool& initialized
     ) noexcept;
 
-    void report_io_error(std::exception_ptr error) noexcept;
-    void rethrow_io_error();
     void send_engine_core_dead();
 
 private:
     Queue<InputMessage> input_queue_;
     Queue<OutputMessage> output_queue_;
-
-    std::mutex io_error_mutex_;
-    std::exception_ptr io_error_;
-    std::latch io_ready_;
 
     std::jthread input_thread_;
     std::jthread output_thread_;
