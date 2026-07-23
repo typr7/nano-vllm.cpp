@@ -1,9 +1,9 @@
 #pragma once
 
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <optional>
-#include <queue>
 #include <stdexcept>
 #include <stop_token>
 #include <utility>
@@ -28,7 +28,19 @@ public:
             if (closed_) {
                 throw std::logic_error("Cannot push to a closed queue");
             }
-            queue_.push(std::move(value));
+            queue_.push_back(std::move(value));
+        }
+        condition_.notify_one();
+    }
+
+    void push_front(T value)
+    {
+        {
+            const std::lock_guard lock(mutex_);
+            if (closed_) {
+                throw std::logic_error("Cannot push to a closed queue");
+            }
+            queue_.push_front(std::move(value));
         }
         condition_.notify_one();
     }
@@ -45,7 +57,7 @@ public:
         }
 
         T value = std::move(queue_.front());
-        queue_.pop();
+        queue_.pop_front();
         return value;
     }
 
@@ -61,7 +73,7 @@ public:
 private:
     std::mutex mutex_;
     std::condition_variable_any condition_;
-    std::queue<T> queue_;
+    std::deque<T> queue_;
     bool closed_{false};
 };
 
