@@ -1,12 +1,11 @@
 #pragma once
 
-#include <latch>
-#include <string>
-#include <thread>
+#include <memory>
+#include <future>
 
-#include "config.h"
-#include "protocol.h"
 #include "queue.hpp"
+#include "protocol.h"
+#include "config.h"
 
 
 namespace cllm
@@ -15,35 +14,40 @@ namespace cllm
 class EngineCore
 {
 public:
-    EngineCore(const Config& cfg, const EngineCoreAddresses& addresses);
     ~EngineCore() noexcept;
+
+    static void run(const Config& cfg, const Addresses& addresses);
+    
+    static std::unique_ptr<EngineCore> create(const Config& cfg, const Addresses& addresses);
+
+    void shutdown() noexcept;
+
+private:
+    EngineCore(const Config& cfg);
+
+    EngineCore(const EngineCore&) = delete;
+    EngineCore& operator=(const EngineCore&) = delete;
 
     void run_busy_loop();
 
-    static void run(const Config& cfg, const EngineCoreAddresses& addresses);
+    // io
+    void send_engine_core_dead() noexcept;
+
+    void input_thread_main(const std::string& address, std::promise<void> is_ready);
+    void output_thread_main(const std::string& address, std::promise<void> is_ready);
+
+    void start_io(const Addresses& addresses);
+
+    void check_io_threads();
 
 private:
-    void process_input_socket(
-        std::stop_token stop_token,
-        const std::string& input_address,
-        std::latch& io_ready,
-        bool& initialized
-    ) noexcept;
-    void process_output_socket(
-        std::stop_token stop_token,
-        const std::string& output_address,
-        std::latch& io_ready,
-        bool& initialized
-    ) noexcept;
+    std::atomic<bool> shutdown_requested_;
 
-    void send_engine_core_dead();
-
-private:
     Queue<InputMessage> input_queue_;
     Queue<OutputMessage> output_queue_;
 
-    std::jthread input_thread_;
-    std::jthread output_thread_;
+    std::future<void> input_future_;
+    std::future<void> output_future_;
 };
 
 }

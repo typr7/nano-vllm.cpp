@@ -13,14 +13,14 @@ PYBIND11_MODULE(_C, module)
         .def_readwrite("model_path", &cllm::Config::model_path)
         .def_readwrite("gpu_memory_utilization", &cllm::Config::gpu_memory_utilization);
 
-    py::class_<cllm::EngineCoreAddresses>(module, "EngineCoreAddresses")
+    py::class_<cllm::Addresses>(module, "EngineCoreAddresses")
         .def(py::init<>())
         .def_readwrite(
             "handshake_address",
-            &cllm::EngineCoreAddresses::handshake_address
+            &cllm::Addresses::handshake_address
         )
-        .def_readwrite("input_address", &cllm::EngineCoreAddresses::input_address)
-        .def_readwrite("output_address", &cllm::EngineCoreAddresses::output_address);
+        .def_readwrite("input_address", &cllm::Addresses::input_address)
+        .def_readwrite("output_address", &cllm::Addresses::output_address);
 
     py::class_<cllm::EngineCore>(module, "EngineCore").def_static(
         "run",

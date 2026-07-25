@@ -1,11 +1,9 @@
 #pragma once
 
 #include <condition_variable>
-#include <deque>
 #include <mutex>
+#include <queue>
 #include <optional>
-#include <stdexcept>
-#include <stop_token>
 #include <utility>
 
 
@@ -17,38 +15,28 @@ class Queue
 {
 public:
     Queue() = default;
+    ~Queue() = default;
 
     Queue(const Queue&) = delete;
     Queue& operator=(const Queue&) = delete;
 
-    void push(T value)
+    bool push(T value)
     {
         {
-            const std::lock_guard lock(mutex_);
+            std::lock_guard lock(mutex_);
             if (closed_) {
-                throw std::logic_error("Cannot push to a closed queue");
+                return false;
             }
-            queue_.push_back(std::move(value));
+            queue_.push(std::move(value));
         }
         condition_.notify_one();
+        return true;
     }
 
-    void push_front(T value)
-    {
-        {
-            const std::lock_guard lock(mutex_);
-            if (closed_) {
-                throw std::logic_error("Cannot push to a closed queue");
-            }
-            queue_.push_front(std::move(value));
-        }
-        condition_.notify_one();
-    }
-
-    std::optional<T> pop(std::stop_token stop_token = {})
+    std::optional<T> pop()
     {
         std::unique_lock lock(mutex_);
-        condition_.wait(lock, stop_token, [this] {
+        condition_.wait(lock, [this] {
             return closed_ || !queue_.empty();
         });
 
@@ -57,24 +45,30 @@ public:
         }
 
         T value = std::move(queue_.front());
-        queue_.pop_front();
+        queue_.pop();
         return value;
     }
 
-    void close() noexcept
+    void close()
     {
         {
-            const std::lock_guard lock(mutex_);
+            std::lock_guard lock(mutex_);
             closed_ = true;
         }
         condition_.notify_all();
     }
 
+    bool closed()
+    {
+        std::lock_guard lock(mutex_);
+        return closed_;
+    }
+
 private:
     std::mutex mutex_;
-    std::condition_variable_any condition_;
-    std::deque<T> queue_;
-    bool closed_{false};
+    std::condition_variable condition_;
+    std::queue<T> queue_;
+    bool closed_ = false;
 };
 
 }
