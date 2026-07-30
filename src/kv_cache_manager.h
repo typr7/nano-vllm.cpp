@@ -39,7 +39,7 @@ private:
 
     std::vector<int> free_blocks_;
 
-    std::unordered_map<std::string, std::shared_ptr<std::vector<int>>> req_to_assigned_blocks_;
+    std::unordered_map<std::string, std::shared_ptr<std::vector<int>>> req_to_allocated_blocks_;
 };
 
 }

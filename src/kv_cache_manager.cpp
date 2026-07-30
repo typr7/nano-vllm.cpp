@@ -24,34 +24,51 @@ bool KVCacheManager::allocate_slots(
     const Request& request, int num_scheduled_tokens
 )
 {
-    int num_remained_slots = num_block_slots_ - request.num_computed_tokens % num_block_slots_;
+    int num_assigned_blocks = 0;
+    auto allocated_iter = req_to_allocated_blocks_.find(request.id);
+    if (allocated_iter != req_to_allocated_blocks_.end()) {
+        num_assigned_blocks = static_cast<int>(allocated_iter->second->size());
+    }
 
-    int num_blocks_required = (
-        num_scheduled_tokens + num_block_slots_ - num_remained_slots - 1
-    ) / num_block_slots_;
+    int num_required_slots = request.num_computed_tokens + num_scheduled_tokens;
+    int num_required_blocks = (
+        (num_required_slots + num_block_slots_ - 1) / num_block_slots_
+    );
 
-    if (num_blocks_required > free_blocks_.size()) {
+    if (num_required_blocks <= num_assigned_blocks) {
+        return true;
+    }
+
+    int num_blocks_to_allocate = num_required_blocks - num_assigned_blocks;
+    if (num_blocks_to_allocate > static_cast<int>(free_blocks_.size())) {
         return false;
     }
 
-    std::vector<int>& assigned_blocks = *req_to_assigned_blocks_[request.id];
-    auto begin = free_blocks_.end() - num_blocks_required;
-    auto end = free_blocks_.end();
+    if (allocated_iter == req_to_allocated_blocks_.end()) {
+        allocated_iter = req_to_allocated_blocks_.emplace(
+            request.id, std::make_shared<std::vector<int>>()
+        ).first;
+    }
 
-    assigned_blocks.reserve(assigned_blocks.size() + num_blocks_required);
-    assigned_blocks.insert(
-        assigned_blocks.end(),
-        begin,
-        end
+    std::vector<int>& allocated_blocks = *allocated_iter->second;
+    auto first_block = free_blocks_.end() - num_blocks_to_allocate;
+
+    allocated_blocks.reserve(allocated_blocks.size() + num_blocks_to_allocate);
+    allocated_blocks.insert(
+        allocated_blocks.end(), first_block, free_blocks_.end()
     );
-    free_blocks_.erase(begin, end);
+    free_blocks_.erase(first_block, free_blocks_.end());
 
     return true;
 }
 
 void KVCacheManager::release_blocks(const std::string& request_id)
 {
-    std::vector<int>& assigned_blocks = *req_to_assigned_blocks_[request_id];
+    if (!req_to_allocated_blocks_.contains(request_id)) {
+        throw std::runtime_error("request not existing");
+    }
+
+    std::vector<int>& assigned_blocks = *req_to_allocated_blocks_[request_id];
 
     free_blocks_.insert(
         free_blocks_.end(),
@@ -59,7 +76,7 @@ void KVCacheManager::release_blocks(const std::string& request_id)
         assigned_blocks.end()
     );
 
-    req_to_assigned_blocks_.erase(request_id);
+    req_to_allocated_blocks_.erase(request_id);
 }
 
 }
