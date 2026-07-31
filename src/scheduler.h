@@ -1,9 +1,7 @@
 #pragma once
 
 #include <list>
-#include <queue>
 #include <vector>
-#include <string>
 
 #include "config.h"
 #include "kv_cache_manager.h"
@@ -20,7 +18,7 @@ class Scheduler
 {
 public:
     Scheduler(const Config& cfg, const KVCacheConfig& kv_cache_config);
-    ~Scheduler() noexcept;
+    ~Scheduler() noexcept = default;
 
     std::vector<RequestData> schedule();
 
@@ -28,8 +26,8 @@ public:
 
 private:
     std::list<Request> running_;
-    std::queue<Request> waiting_;
-    std::queue<Request> preempted_;
+    std::list<Request> waiting_;
+    std::list<Request> preempted_;
 
     KVCacheManager kv_cache_manager_;
 
