@@ -10,10 +10,19 @@ namespace cllm
 
 Scheduler::Scheduler(const Config& config, const KVCacheConfig& kv_cache_config)
     : kv_cache_manager_(kv_cache_config),
-      max_model_len_(config.model_config.max_model_len),
+      // max_model_len_(config.model_config.max_model_len),
       max_num_scheduled_tokens_(config.max_num_scheduled_tokens),
       max_chunk_len_(config.max_chunk_len)
 {
+}
+
+void Scheduler::add_request(Request request)
+{
+    int num_tokens = static_cast<int>(request.token_ids.size());
+    request.num_prompt_tokens = num_tokens;
+    request.num_prefill_tokens = num_tokens;
+    request.num_computed_tokens = 0;
+    waiting_.push_back(std::move(request));
 }
 
 std::vector<RequestData> Scheduler::schedule()
@@ -26,7 +35,8 @@ std::vector<RequestData> Scheduler::schedule()
     std::size_t num_preempted_before = preempted_.size();
     auto cur_iter = running_.begin();
     while (cur_iter != running_.end() && token_budget > 0) {
-        int num_scheduled_tokens = cur_iter->num_tokens - cur_iter->num_computed_tokens;
+        int num_tokens = static_cast<int>(cur_iter->token_ids.size());
+        int num_scheduled_tokens = num_tokens - cur_iter->num_computed_tokens;
         num_scheduled_tokens = std::min(
             {num_scheduled_tokens, max_chunk_len_, token_budget}
         );
@@ -59,15 +69,18 @@ std::vector<RequestData> Scheduler::schedule()
         token_budget -= num_scheduled_tokens;
 
         const auto compute_begin = cur_iter->token_ids.begin() + cur_iter->num_computed_tokens;
+        const int num_computed_after = cur_iter->num_computed_tokens + num_scheduled_tokens;
         scheduled.push_back(RequestData{
             .request_id = cur_iter->id,
             .is_prefill = cur_iter->num_computed_tokens < cur_iter->num_prefill_tokens,
+            .needs_sampling = num_computed_after >= cur_iter->num_prefill_tokens,
             .position_offset = cur_iter->num_computed_tokens,
             .tokens_to_compute = std::vector<int>(
                 compute_begin,
                 compute_begin + num_scheduled_tokens
             ),
-            .allocated_blocks = kv_cache_manager_.get_allocated_blocks(cur_iter->id)
+            .allocated_blocks = kv_cache_manager_.get_allocated_blocks(cur_iter->id),
+            .sample_params = cur_iter->sample_params
         });
 
         cur_iter++;
@@ -79,8 +92,9 @@ std::vector<RequestData> Scheduler::schedule()
             auto& request_queue = preempted_.empty() ? waiting_ : preempted_;
             auto cur_iter = request_queue.begin();
 
+            int num_tokens = static_cast<int>(cur_iter->token_ids.size());
             int num_scheduled_tokens = std::min(
-                {cur_iter->num_tokens, max_chunk_len_, token_budget}
+                {num_tokens, max_chunk_len_, token_budget}
             );
             assert(num_scheduled_tokens > 0);
 
@@ -94,12 +108,14 @@ std::vector<RequestData> Scheduler::schedule()
             scheduled.push_back(RequestData{
                 .request_id = cur_iter->id,
                 .is_prefill = true,
+                .needs_sampling = num_scheduled_tokens >= cur_iter->num_prefill_tokens,
                 .position_offset = 0,
                 .tokens_to_compute = std::vector<int>(
                     cur_iter->token_ids.begin(),
                     cur_iter->token_ids.begin() + num_scheduled_tokens
                 ),
-                .allocated_blocks = kv_cache_manager_.get_allocated_blocks(cur_iter->id)
+                .allocated_blocks = kv_cache_manager_.get_allocated_blocks(cur_iter->id),
+                .sample_params = cur_iter->sample_params
             });
 
             running_.splice(running_.end(), request_queue, cur_iter);

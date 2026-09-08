@@ -18,13 +18,13 @@ public:
     CudaDeviceBuffer(CudaDeviceBuffer&& other) noexcept;
     CudaDeviceBuffer& operator=(CudaDeviceBuffer&& other) noexcept;
 
-    template <typename T>
+    template <typename T = void>
     T* data() noexcept
     {
         return static_cast<T*>(device_data);
     }
 
-    template <typename T>
+    template <typename T = void>
     const T* data() const noexcept
     {
         return static_cast<const T*>(device_data);

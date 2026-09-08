@@ -31,23 +31,18 @@ enum class OutputType: std::uint8_t
     ENGINE_CORE_DEAD = 1,
 };
 
-struct SampleParams
-{
-    std::uint32_t max_tokens{16};
-    float temperature{1.f};
-    std::uint32_t top_k{0};
-    float top_p{1.f};
-
-    MSGPACK_DEFINE_MAP(max_tokens, temperature, top_k, top_p);
-};
-
 struct EngineCoreRequest
 {
     std::string request_id;
-    std::vector<std::int32_t> token_ids;
-    SampleParams sample_params;
 
-    MSGPACK_DEFINE_MAP(request_id, token_ids, sample_params);
+    std::uint32_t max_output_tokens = 1024;
+    float temperature = 1.f;
+    std::uint32_t top_k = 0;
+    float top_p = 1.f;
+
+    std::vector<std::int32_t> token_ids;
+
+    MSGPACK_DEFINE_MAP(request_id, max_output_tokens, temperature, top_k, top_p, token_ids);
 };
 
 struct EngineCoreOutput
@@ -63,12 +58,6 @@ struct Addresses
     std::string handshake_address;
     std::string input_address;
     std::string output_address;
-};
-
-struct InputMessage
-{
-    RequestType type;
-    std::optional<EngineCoreRequest> payload;
 };
 
 struct OutputMessage

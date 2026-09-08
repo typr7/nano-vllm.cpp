@@ -2,10 +2,14 @@
 
 #include <memory>
 #include <future>
+#include <memory>
 
+#include "executor.h"
+#include "scheduler.h"
 #include "queue.hpp"
 #include "protocol.h"
 #include "config.h"
+#include "kv_cache_manager.h"
 
 
 namespace cllm
@@ -40,14 +44,22 @@ private:
 
     void check_io_threads();
 
+    // kv cache
+    static KVCacheConfig initialize_kv_cache(Executor& executor, const Config& cfg);
+
 private:
     std::atomic<bool> shutdown_requested_;
 
-    Queue<InputMessage> input_queue_;
+    // io
+    Queue<Request> input_queue_;
     Queue<OutputMessage> output_queue_;
 
     std::future<void> input_future_;
     std::future<void> output_future_;
+
+    Executor executor_;
+
+    Scheduler scheduler_;
 };
 
 }

@@ -7,6 +7,7 @@
 #include <zmq_addon.hpp>
 
 #include "engine_core.h"
+#include "request.h"
 #include "logger.h"
 
 
@@ -46,14 +47,31 @@ EngineCoreRequest decode_request(const zmq::message_t& frame)
 }
 
 EngineCore::EngineCore(const Config& cfg)
-    : shutdown_requested_{false},
-      input_queue_{}, output_queue_{},
-      input_future_{}, output_future_{}
-{}
+    : shutdown_requested_(false),
+      executor_(cfg),
+      scheduler_(cfg, initialize_kv_cache(executor_, cfg))
+{
+}
 
 EngineCore::~EngineCore() noexcept
 {
     shutdown();
+}
+
+KVCacheConfig EngineCore::initialize_kv_cache(Executor& executor, const Config& cfg)
+{
+    std::size_t byte_size = executor.available_memory_for_kv_cache(cfg.gpu_memory_utilization);
+
+    // The block layout, including the layer count, is owned by the model runner.
+    std::size_t block_byte_size = executor.kv_cache_block_bytes();
+    int num_blocks = static_cast<int>(byte_size / block_byte_size);
+
+    executor.allocate_kv_cache(num_blocks);
+
+    return KVCacheConfig{
+        .num_block_slots = cfg.block_size,
+        .num_blocks = num_blocks
+    };
 }
 
 void EngineCore::start_io(const Addresses& addresses)
@@ -153,9 +171,15 @@ void EngineCore::input_thread_main(
                     }
 
                     EngineCoreRequest req = decode_request(frames.back());
-                    bool ok = input_queue_.push(InputMessage{
-                        .type = RequestType::ADD,
-                        .payload = std::move(req)
+                    bool ok = input_queue_.push(Request{
+                        .id = std::move(req.request_id),
+                        .max_output_tokens = static_cast<int>(req.max_output_tokens),
+                        .token_ids = std::move(req.token_ids),
+                        .sample_params = SampleParams{
+                            .temperature = req.temperature,
+                            .top_k = static_cast<int>(req.top_k),
+                            .top_p = req.top_p
+                        }
                     });
                     if (!ok) {
                         return;
@@ -303,7 +327,7 @@ std::unique_ptr<EngineCore> EngineCore::create(
 
 void EngineCore::run_busy_loop()
 {
-    while (!shutdown_requested_) {
+    while (!shutdown_requested_.load(std::memory_order_acquire)) {
         check_io_threads();
         // pop input_queue, do sth, push output_queue
     }

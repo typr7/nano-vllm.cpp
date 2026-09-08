@@ -10,11 +10,11 @@
 #include <utility>
 #include <vector>
 #include <cassert>
-#include <bit>
 
 #include <nlohmann/json.hpp>
 
 #include "model_weights.h"
+#include "util.h"
 
 
 namespace cllm
@@ -24,7 +24,7 @@ namespace
 {
 
 constexpr std::size_t MAX_HEADER_SIZE = 100'000'000;
-constexpr std::size_t WEIGHT_ALIGNMENT = 128;
+constexpr std::size_t WEIGHT_ALIGNMENT = 256;
 constexpr std::size_t UPLOAD_CHUNK_SIZE = 16ULL * 1024 * 1024; // 16MiB
 
 struct CopyPlan
@@ -35,12 +35,7 @@ struct CopyPlan
     std::size_t byte_size;
 };
 
-template <std::size_t ALIGNMENT>
-constexpr std::size_t align_up(std::size_t offset)
-{
-    static_assert(std::has_single_bit(ALIGNMENT));
-    return (offset + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
-}
+
 
 std::pair<std::size_t, std::size_t> check_tensor_spec(
     const nlohmann::json& header,
@@ -208,9 +203,8 @@ void upload(
     }
 }
 
-template <typename T>
 void build_view(
-    ModelWeights<T>& weights,
+    ModelWeights& weights,
     const std::vector<CopyPlan>& plans,
     const ModelConfig& config
 )
@@ -231,16 +225,18 @@ void build_view(
 
     auto make_view_1d = [&](std::string_view tensor_name, int size) {
         const CopyPlan& copy = find_copy(tensor_name);
-        return TensorView<T, 1>(
-            reinterpret_cast<T*>(weights.data.template data<std::byte>() + copy.dst_offset),
+        return make_tensor<1>(
+            weights.data.data<std::byte>() + copy.dst_offset,
+            config.dtype,
             {size}
         );
     };
 
     auto make_view_2d = [&](std::string_view tensor_name, int rows, int columns) {
         const CopyPlan& copy = find_copy(tensor_name);
-        return TensorView<T, 2>(
-            reinterpret_cast<T*>(weights.data.template data<std::byte>() + copy.dst_offset),
+        return make_tensor<2>(
+            weights.data.data<std::byte>() + copy.dst_offset,
+            config.dtype,
             {rows, columns}
         );
     };
@@ -260,7 +256,7 @@ void build_view(
     weights.layers.resize(config.num_hidden_layers);
     for (int i = 0; i < config.num_hidden_layers; i++) {
         const std::string layer = std::format("model.layers.{}", i);
-        LayerWeights<T>& dst = weights.layers[i];
+        LayerWeights& dst = weights.layers[i];
 
         dst.input_layernorm = make_view_1d(layer + ".input_layernorm.weight", config.hidden_size);
 
@@ -298,8 +294,7 @@ void build_view(
 
 }
 
-template <typename T>
-ModelWeights<T> ModelWeights<T>::load_from_safetensors(
+ModelWeights ModelWeights::load_from_safetensors(
     const std::filesystem::path& path,
     const ModelConfig& config
 )
@@ -363,7 +358,7 @@ ModelWeights<T> ModelWeights<T>::load_from_safetensors(
             ));
         }
 
-        ModelWeights<T> weights;
+        ModelWeights weights;
         weights.data.resize(device_buffer_size);
         upload(file, byte_buffer_offset, plans, weights.data);
         build_view(weights, plans, config);
@@ -376,12 +371,5 @@ ModelWeights<T> ModelWeights<T>::load_from_safetensors(
         ));
     }
 }
-
-// instantiation for bf16
-template
-ModelWeights<nv_bfloat16> ModelWeights<nv_bfloat16>::load_from_safetensors(
-    const std::filesystem::path& path,
-    const ModelConfig& config
-);
 
 }

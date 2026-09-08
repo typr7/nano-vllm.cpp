@@ -3,6 +3,23 @@ find_package(Threads REQUIRED)
 
 include(FetchContent)
 
+# nlohmann/json is header-only. Prefer an installed package and fetch a pinned
+# release when it is unavailable.
+find_package(nlohmann_json CONFIG QUIET)
+
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    message(STATUS "nlohmann/json was not found locally; fetching v3.12.0")
+    set(JSON_BuildTests OFF CACHE BOOL "Do not build nlohmann/json tests" FORCE)
+
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.12.0
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
 # Use CMake's modern FindPython support, which is also understood by pybind11.
 set(PYBIND11_FINDPYTHON ON)
 

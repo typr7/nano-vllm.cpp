@@ -5,10 +5,26 @@
 #include <cassert>
 
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
+
+#include "tensor.h"
 
 
 namespace cllm
 {
+
+namespace
+{
+
+template <typename T> struct dtype_of;
+
+template<>
+struct dtype_of<nv_bfloat16>
+{
+    static constexpr DataType value = DataType::BF16;
+};
+
+}
 
 template <typename T, int DIM>
 class TensorView
@@ -41,17 +57,20 @@ public:
         }
     }
 
-    template <typename... Indices>
-    __device__
-    T& operator()(Indices... indices) noexcept
+    __host__
+    explicit TensorView(const Tensor<DIM>& tensor)
+        : device_ptr_(static_cast<T*>(tensor.device_ptr))
     {
-        assert(device_ptr_ != nullptr);
-        return *(device_ptr_ + offset_of(indices...));
+        assert(tensor.dtype == dtype_of<std::remove_const_t<T>>::value);
+        for (int i = 0; i < DIM; i++) {
+            shape_[i] = tensor.shape[i];
+            stride_[i] = tensor.stride[i];
+        }
     }
 
     template <typename... Indices>
     __device__
-    const T& operator()(Indices... indices) const noexcept
+    T& operator()(Indices... indices) const noexcept
     {
         assert(device_ptr_ != nullptr);
         return *(device_ptr_ + offset_of(indices...));

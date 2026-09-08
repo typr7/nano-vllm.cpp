@@ -7,11 +7,16 @@
 namespace cllm
 {
 
+struct SampleParams
+{
+    float temperature;
+    int top_k;
+    float top_p;
+};
+
 struct Request
 {
     std::string id;
-
-    int num_tokens;
 
     int num_prompt_tokens;
 
@@ -22,7 +27,11 @@ struct Request
     // the number of tokens that have been computed, have kv caches stored
     int num_computed_tokens;
 
+    int max_output_tokens;
+
     std::vector<int> token_ids;
+
+    SampleParams sample_params;
 };
 
 struct RequestData
@@ -31,10 +40,16 @@ struct RequestData
 
     bool is_prefill;
 
+    // False for every chunk of a chunked prefill except the last one. Only the
+    // final chunk produces a token, so only its logits are worth computing.
+    bool needs_sampling;
+
     int position_offset;
 
     std::vector<int> tokens_to_compute;
     std::vector<int> allocated_blocks;
+
+    SampleParams sample_params;
 };
 
 }
