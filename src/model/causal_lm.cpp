@@ -35,6 +35,7 @@ void CausalLM::forward(
         workspace.residual,
         context.stream()
     );
+
     for (int layer = 0; layer < config_.num_hidden_layers; layer++) {
         decoder_layer(context, batch, kv_cache, layer, workspace);
     }
@@ -46,7 +47,31 @@ void CausalLM::compute_logits(
     const ActualWorkspace& workspace
 ) const
 {
+    if (batch.num_sampling_reqs == 0) {
+        return;
+    }
 
+    ops::embedding(
+        batch.logits_indices,
+        workspace.residual,
+        workspace.sampling_hidden,
+        context.stream()
+    );
+
+    ops::rms_norm(
+        workspace.sampling_hidden,
+        weights_.norm,
+        workspace.sampling_hidden,
+        config_.rms_norm_eps,
+        context.stream()
+    );
+
+    ops::projection(
+        workspace.sampling_hidden,
+        weights_.lm_head,
+        workspace.logits,
+        context.cublas()
+    );
 }
 
 void CausalLM::decoder_layer(
