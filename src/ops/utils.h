@@ -20,6 +20,12 @@ union BF16x8
     nv_bfloat16 bf16x8[8];
 };
 
+__device__ __forceinline__
+uint32_t cvta_shared(const void* smem)
+{
+    return static_cast<uint32_t>(__cvta_generic_to_shared(smem));
+}
+
 template <uint32_t kWidth = 32>
 requires (2 <= kWidth && kWidth <= 32 && std::has_single_bit(kWidth))
 __device__ __forceinline__
@@ -44,16 +50,20 @@ float warp_reduce_max(float val)
 }
 
 __device__ __forceinline__
-uint32_t pack_bf16x2(float low, float high)
+uint32_t pack_float2(float low, float high)
 {
-    return static_cast<uint32_t>(__bfloat16_as_ushort(low))
-           | (static_cast<uint32_t>(__bfloat16_as_ushort(high)) << 16);
+    union {
+        uint32_t packed;
+        __nv_bfloat162 bf162;
+    } pack;
+    pack.bf162 = __float22bfloat162_rn(make_float2(low, high));
+    return pack.packed;
 }
 
 template <typename ToType, typename FromType>
 ToType& as(FromType* p)
 {
-    return *reinterpret_cast<ToType* const>(p);
+    return *reinterpret_cast<ToType*>(p);
 }
 
 }

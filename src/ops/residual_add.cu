@@ -3,7 +3,7 @@
 
 #include "residual_add.h"
 
-#include "utils.cuh"
+#include "ops/utils.h"
 #include "cuda_utils.h"
 
 

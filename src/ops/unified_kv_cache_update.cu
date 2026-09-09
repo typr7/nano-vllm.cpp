@@ -5,7 +5,7 @@
 #include <cuda_bf16.h>
 
 #include "ops/unified_kv_cache_update.h"
-#include "ops/utils.cuh"
+#include "ops/utils.h"
 #include "cuda_utils.h"
 
 

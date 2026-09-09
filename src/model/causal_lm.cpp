@@ -2,6 +2,7 @@
 
 #include "causal_lm.h"
 #include "ops/embedding.h"
+#include "ops/paged_attention.h"
 #include "ops/projection.h"
 #include "ops/rms_norm.h"
 #include "ops/qk_norm_rope_fused.h"
@@ -104,7 +105,15 @@ void CausalLM::decoder_layer(
         context.stream()
     );
 
-    // gqa
+    ops::paged_attention(
+        workspace.qkv,
+        kv_cache.k(layer),
+        kv_cache.v(layer),
+        workspace.attn_out,
+        batch,
+        kv_cache.block_size,
+        context.stream()
+    );
 
     ops::projection(workspace.attn_out, layer_weights.o_proj, workspace.hidden, context.cublas());
 

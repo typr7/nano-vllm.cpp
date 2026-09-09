@@ -5,7 +5,7 @@
 
 #include "ops/embedding.h"
 #include "tensor.h"
-#include "ops/utils.cuh"
+#include "ops/utils.h"
 #include "cuda_utils.h"
 
 

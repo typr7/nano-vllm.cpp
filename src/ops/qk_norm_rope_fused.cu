@@ -3,7 +3,7 @@
 
 #include "qk_norm_rope_fused.h"
 #include "cuda_utils.h"
-#include "ops/utils.cuh"
+#include "ops/utils.h"
 
 
 namespace cllm::ops
@@ -128,10 +128,10 @@ void bf16_qk_norm_rope_fused_packedqkv_q2048k1024d128(
         peer_out[i] = peer_val * cos + self_val * sin;
     }
     b128.vec = make_uint4(
-        pack_bf16x2(self_out[0], self_out[1]),
-        pack_bf16x2(self_out[2], self_out[3]),
-        pack_bf16x2(peer_out[0], peer_out[1]),
-        pack_bf16x2(peer_out[2], peer_out[3])
+        pack_float2(self_out[0], self_out[1]),
+        pack_float2(self_out[2], self_out[3]),
+        pack_float2(peer_out[0], peer_out[1]),
+        pack_float2(peer_out[2], peer_out[3])
     );
     b128.i64x2[1] = __shfl_xor_sync(0xffffffff, b128.i64x2[1], 8);
 

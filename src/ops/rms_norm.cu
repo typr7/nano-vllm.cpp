@@ -6,7 +6,7 @@
 #include "rms_norm.h"
 #include "tensor.h"
 #include "cuda_utils.h"
-#include "ops/utils.cuh"
+#include "ops/utils.h"
 
 
 namespace cllm::ops

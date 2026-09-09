@@ -5,7 +5,7 @@
 
 #include "qk_norm.h"
 #include "cuda_utils.h"
-#include "ops/utils.cuh"
+#include "ops/utils.h"
 
 
 namespace cllm::ops

@@ -2,7 +2,7 @@
 #include <format>
 
 #include "swiglu.h"
-#include "utils.cuh"
+#include "ops/utils.h"
 #include "cuda_utils.h"
 
 

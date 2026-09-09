@@ -4,7 +4,7 @@
 
 #include "rope.h"
 #include "cuda_utils.h"
-#include "ops/utils.cuh"
+#include "ops/utils.h"
 
 
 namespace cllm::ops
@@ -103,10 +103,10 @@ void bf16_rope_packedqkv(
     }
 
     b128.vec = make_uint4(
-        pack_bf16x2(self_outputs[0], self_outputs[1]),
-        pack_bf16x2(self_outputs[2], self_outputs[3]),
-        pack_bf16x2(peer_outputs[0], peer_outputs[1]),
-        pack_bf16x2(peer_outputs[2], peer_outputs[3])
+        pack_float2(self_outputs[0], self_outputs[1]),
+        pack_float2(self_outputs[2], self_outputs[3]),
+        pack_float2(peer_outputs[0], peer_outputs[1]),
+        pack_float2(peer_outputs[2], peer_outputs[3])
     );
     b128.i64x2[1] = __shfl_xor_sync(0xffffffff, b128.i64x2[1], kHalfHeadThreads);
 

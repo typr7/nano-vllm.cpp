@@ -37,6 +37,7 @@ add_library(cllm_core STATIC
     src/model/causal_lm.cpp
 
     src/ops/embedding.cu
+    src/ops/paged_attention.cu
     src/ops/projection.cu
     src/ops/qk_norm_rope_fused.cu
     src/ops/qk_norm.cu
