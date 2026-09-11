@@ -2,8 +2,8 @@
 
 #include <cstddef>
 #include <memory>
-#include <string>
 #include <vector>
+#include <future>
 
 #include "config.h"
 #include "request.h"
@@ -11,16 +11,6 @@
 
 namespace cllm
 {
-
-// One token sampled for one request during one step.
-//
-// A request in the middle of a chunked prefill produces nothing, so this is
-// generally shorter than the scheduled batch.
-struct SamplerOutput
-{
-    std::string request_id;
-    int token_id;
-};
 
 // Host-side, flattened description of one scheduled step.
 //
@@ -114,7 +104,7 @@ public:
     // Runs one forward pass over the scheduled batch and samples one token for
     // every request whose prefill completed. Blocks until the sampled tokens
     // are back on the host.
-    std::vector<SamplerOutput> run_model(const std::vector<RequestData>& scheduled);
+    std::future<std::vector<SamplerOutput>> run_model(const std::vector<RequestData>& scheduled);
 
 private:
     struct Impl;

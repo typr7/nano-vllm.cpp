@@ -1,8 +1,6 @@
 #include <algorithm>
 #include <cassert>
 
-#include <nlohmann/json.hpp>
-
 #include "model_runner.h"
 #include "cuda_context.h"
 #include "model_config.h"
@@ -10,6 +8,7 @@
 #include "workspace.h"
 #include "batch_buffer.h"
 #include "model/causal_lm.h"
+#include "sampler.h"
 
 
 namespace cllm
@@ -108,7 +107,7 @@ struct ModelRunner::Impl
 
     void allocate_kv_cache(int num_blocks);
 
-    std::vector<SamplerOutput> run_model(const std::vector<RequestData>& scheduled);
+    std::future<std::vector<SamplerOutput>> run_model(const std::vector<RequestData>& scheduled);
 
     Config config;
 
@@ -123,6 +122,8 @@ struct ModelRunner::Impl
 
     // dataflow: vector in ModelInput -> PinnedBuffer -> CudaDeviceBuffer
     BatchBuffer batch_buffer;
+
+    Sampler sampler;
 
     // allocated by allocate_kv_cache()
     KVCache kv_cache;
@@ -140,7 +141,8 @@ ModelRunner::Impl::Impl(const Config& config)
           config.max_num_scheduled_tokens,
           config.max_num_seqs
       )),
-      batch_buffer(BatchBuffer::create(config, model_config))
+      batch_buffer(BatchBuffer::create(config, model_config)),
+      sampler(config.max_num_seqs, model_config.vocab_size)
 {
 }
 
@@ -149,16 +151,22 @@ void ModelRunner::Impl::allocate_kv_cache(int num_blocks)
     kv_cache = KVCache::create(model_config, num_blocks, config.block_size);
 }
 
-std::vector<SamplerOutput> ModelRunner::Impl::run_model(const std::vector<RequestData>& scheduled)
+std::future<std::vector<SamplerOutput>> ModelRunner::Impl::run_model(
+    const std::vector<RequestData>& scheduled
+)
 {
     const ModelInput input = prepare_model_input(scheduled, config.block_size);
 
     const ForwardBatch batch = batch_buffer.upload(input, context);
-    const auto aws = ActualWorkspace::create(workspace, batch.num_tokens, batch.num_sampling_reqs);
-    model.forward(context, batch, kv_cache.view, aws);
-    model.compute_logits(context, batch, aws);
+    const WorkspaceView workspace_view = workspace.view(batch.num_tokens, batch.num_sampling_reqs);
+    model.forward(context, batch, kv_cache.view, workspace_view);
+    model.compute_logits(context, batch, workspace_view);
+    sampler.sample(context, workspace_view.logits, scheduled, input.sampling_request_indices);
+    return std::async(std::launch::async, [this]() -> std::vector<SamplerOutput> {
+        context.synchronize();
 
-    return {};
+        return {};
+    });
 }
 
 ModelRunner::ModelRunner(const Config& cfg)
@@ -188,8 +196,14 @@ void ModelRunner::allocate_kv_cache(int num_blocks)
     impl_->allocate_kv_cache(num_blocks);
 }
 
-std::vector<SamplerOutput> ModelRunner::run_model(const std::vector<RequestData>& scheduled)
+std::future<std::vector<SamplerOutput>> ModelRunner::run_model(
+    const std::vector<RequestData>& scheduled
+)
 {
+    if (scheduled.empty()) {
+        return {};
+    }
+
     return impl_->run_model(scheduled);
 }
 

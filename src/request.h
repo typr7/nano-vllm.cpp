@@ -14,6 +14,16 @@ struct SampleParams
     float top_p;
 };
 
+// One token sampled for one request during one step.
+//
+// A request in the middle of a chunked prefill produces nothing, so this is
+// generally shorter than the scheduled batch.
+struct SamplerOutput
+{
+    std::string request_id;
+    int token_id;
+};
+
 struct Request
 {
     std::string id;
