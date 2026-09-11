@@ -22,13 +22,13 @@ public:
         const CudaContext& context,
         const ForwardBatch& batch,
         const KVCacheView& kv_cache,
-        const ActualWorkspace& workspace
+        const WorkspaceView& workspace
     ) const;
 
     void compute_logits(
         const CudaContext& context,
         const ForwardBatch& batch,
-        const ActualWorkspace& workspace
+        const WorkspaceView& workspace
     ) const;
 
 private:
@@ -36,14 +36,17 @@ private:
         const CudaContext& context,
         const ForwardBatch& batch,
         const KVCacheView& kv_cache,
-        int layer,
-        const ActualWorkspace& workspace
+        const WorkspaceView& workspace,
+        int layer
     ) const;
 
 private:
     ModelConfig config_;
     ModelWeights weights_;
     RopeCache rope_;
+
+    int q_size_;
+    int kv_size_;
 };
 
 }

@@ -18,7 +18,9 @@ namespace cllm
 CausalLM::CausalLM(const ModelConfig& config, ModelWeights&& weights)
     : config_(config),
       weights_(std::move(weights)),
-      rope_(RopeCache::create(config))
+      rope_(RopeCache::create(config)),
+      q_size_(config.num_attention_heads * config.head_dim),
+      kv_size_(config.num_kv_heads * config.head_dim)
 {
 }
 
@@ -26,7 +28,7 @@ void CausalLM::forward(
     const CudaContext& context,
     const ForwardBatch& batch,
     const KVCacheView& kv_cache,
-    const ActualWorkspace& workspace
+    const WorkspaceView& workspace
 ) const
 {
     ops::embedding(
@@ -37,14 +39,14 @@ void CausalLM::forward(
     );
 
     for (int layer = 0; layer < config_.num_hidden_layers; layer++) {
-        decoder_layer(context, batch, kv_cache, layer, workspace);
+        decoder_layer(context, batch, kv_cache, workspace, layer);
     }
 }
 
 void CausalLM::compute_logits(
     const CudaContext& context,
     const ForwardBatch& batch,
-    const ActualWorkspace& workspace
+    const WorkspaceView& workspace
 ) const
 {
     if (batch.num_sampling_reqs == 0) {
@@ -78,8 +80,8 @@ void CausalLM::decoder_layer(
     const CudaContext& context,
     const ForwardBatch& batch,
     const KVCacheView& kv_cache,
-    int layer,
-    const ActualWorkspace& workspace
+    const WorkspaceView& workspace,
+    int layer
 ) const
 {
     const LayerWeights& layer_weights = weights_.layers.at(layer);
@@ -94,9 +96,6 @@ void CausalLM::decoder_layer(
 
     // logical reshape: [T, Q/K] -> [T, H_Q/K, D]
 
-    const int q_size = config_.num_attention_heads * config_.head_dim;
-    const int kv_size = config_.num_kv_heads * config_.head_dim;
-
     if (config_.has_qk_norm) {
         ops::qk_norm_rope(
             workspace.qkv,
@@ -104,8 +103,8 @@ void CausalLM::decoder_layer(
             layer_weights.k_norm,
             rope_.view,
             batch.positions,
-            q_size,
-            kv_size,
+            q_size_,
+            kv_size_,
             config_.head_dim,
             config_.rms_norm_eps,
             context.stream()
@@ -115,8 +114,8 @@ void CausalLM::decoder_layer(
             workspace.qkv,
             rope_.view,
             batch.positions,
-            q_size,
-            kv_size,
+            q_size_,
+            kv_size_,
             config_.head_dim,
             context.stream()
         );
