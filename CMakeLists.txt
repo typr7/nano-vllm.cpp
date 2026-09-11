@@ -29,10 +29,13 @@ add_library(cllm_core STATIC
     src/scheduler.cpp
     src/logger.cpp
     src/kv_cache_manager.cpp
+    src/cuda_context.cpp
     src/cuda_device_buffer.cpp
     src/model_config.cpp
     src/engine_core.cpp
     src/model_runner.cpp
+    src/sampler.cpp
+    src/workspace.cpp
 
     src/model/causal_lm.cpp
 
@@ -44,6 +47,7 @@ add_library(cllm_core STATIC
     src/ops/residual_add.cu
     src/ops/rms_norm.cu
     src/ops/rope.cu
+    src/ops/sampler.cu
     src/ops/swiglu.cu
     src/ops/unified_kv_cache_update.cu
 )
