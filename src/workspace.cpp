@@ -16,10 +16,14 @@ constexpr std::size_t ALIGNMENT = 256;
 
 }
 
-Workspace Workspace::create(const ModelConfig &config, int max_tokens, int max_seqs)
+Workspace Workspace::create(
+    const ModelConfig& config,
+    int max_tokens,
+    int max_sampling_reqs
+)
 {
     assert(max_tokens > 0);
-    assert(max_seqs > 0);
+    assert(max_sampling_reqs > 0);
 
     const std::size_t hidden_size = config.hidden_size;
     const std::size_t q_size
@@ -46,8 +50,11 @@ Workspace Workspace::create(const ModelConfig &config, int max_tokens, int max_s
     reserve_tensor_bytes(ffn_workspace_size, max_tokens * 2 * intermediate); // gate_up
 
     std::size_t logits_workspace_size = 0;
-    reserve_tensor_bytes(logits_workspace_size, max_seqs * hidden_size); // sampling_hidden
-    reserve_tensor_bytes(logits_workspace_size, max_seqs * vocab_size); // logits
+    reserve_tensor_bytes(
+        logits_workspace_size,
+        max_sampling_reqs * hidden_size
+    ); // sampling_hidden
+    reserve_tensor_bytes(logits_workspace_size, max_sampling_reqs * vocab_size); // logits
 
     std::size_t required_byte_size = std::max({
         attn_workspace_size,
@@ -73,76 +80,56 @@ Workspace Workspace::create(const ModelConfig &config, int max_tokens, int max_s
     logits_workspace_size = 0;
     
     Workspace workspace {};
-    workspace.hidden = place_view(attn_workspace_size, max_tokens, hidden_size);
-    workspace.residual = place_view(attn_workspace_size, max_tokens, hidden_size);
+    workspace.hidden_ = place_view(attn_workspace_size, max_tokens, hidden_size);
+    workspace.residual_ = place_view(attn_workspace_size, max_tokens, hidden_size);
 
     ffn_workspace_size = attn_workspace_size;
     // attn
-    workspace.qkv = place_view(attn_workspace_size, max_tokens, q_size + 2 * kv_size);
-    workspace.attn_out = place_view(attn_workspace_size, max_tokens, q_size);
+    workspace.qkv_ = place_view(attn_workspace_size, max_tokens, q_size + 2 * kv_size);
+    workspace.attn_out_ = place_view(attn_workspace_size, max_tokens, q_size);
     // ffn
-    workspace.gate_up = place_view(ffn_workspace_size, max_tokens, 2 * intermediate);
+    workspace.gate_up_ = place_view(ffn_workspace_size, max_tokens, 2 * intermediate);
+    workspace.gated_ = make_tensor<2>(
+        workspace.gate_up_.device_ptr,
+        workspace.gate_up_.dtype,
+        {max_tokens, workspace.gate_up_.shape[1] / 2},
+        {workspace.gate_up_.stride[0], 1}
+    );
     // compute logits
-    workspace.sampling_hidden = place_view(logits_workspace_size, max_seqs, hidden_size);
-    workspace.logits = place_view(logits_workspace_size, max_seqs, vocab_size);
+    workspace.sampling_hidden_ = place_view(
+        logits_workspace_size,
+        max_sampling_reqs,
+        hidden_size
+    );
+    workspace.logits_ = place_view(logits_workspace_size, max_sampling_reqs, vocab_size);
 
-    workspace.data = std::move(data);
+    workspace.data_ = std::move(data);
 
     return workspace;
 }
 
-ActualWorkspace ActualWorkspace::create(
-    const Workspace &workspace,
+WorkspaceView Workspace::view(
     int num_tokens,
-    int num_sampling_seqs
-)
+    int num_sampling_reqs
+) const
 {
-    return ActualWorkspace{
-        .hidden = make_tensor<2>(
-            workspace.hidden.device_ptr,
-            workspace.hidden.dtype,
-            {num_tokens, workspace.hidden.shape[1]}
-        ),
-        .residual = make_tensor<2>(
-            workspace.residual.device_ptr,
-            workspace.residual.dtype,
-            {num_tokens, workspace.residual.shape[1]}
-        ),
-        .qkv = make_tensor<2>(
-            workspace.qkv.device_ptr,
-            workspace.qkv.dtype,
-            {num_tokens, workspace.qkv.shape[1]}
-        ),
-        .attn_out = make_tensor<2>(
-            workspace.attn_out.device_ptr,
-            workspace.attn_out.dtype,
-            {num_tokens, workspace.attn_out.shape[1]}
-        ),
-        .gate_up = make_tensor<2>(
-            workspace.gate_up.device_ptr,
-            workspace.gate_up.dtype,
-            {num_tokens, workspace.gate_up.shape[1]}
-        ),
-        .gated = make_tensor<2>(
-            workspace.gate_up.device_ptr,
-            workspace.gate_up.dtype,
-            {num_tokens, workspace.gate_up.shape[1] / 2},
-            {workspace.gate_up.shape[1], 1}
-        ),
-        .sampling_hidden = (num_sampling_seqs != 0)
-                           ? make_tensor<2>(
-                                 workspace.sampling_hidden.device_ptr,
-                                 workspace.sampling_hidden.dtype,
-                                 {num_sampling_seqs, workspace.sampling_hidden.shape[1]}
-                             )
-                           : Tensor<2>{},
-        .logits = (num_sampling_seqs != 0)
-                  ? make_tensor<2>(
-                        workspace.logits.device_ptr,
-                        workspace.logits.dtype,
-                        {num_sampling_seqs, workspace.logits.shape[1]}
-                    )
-                  : Tensor<2>{}
+    assert(num_tokens > 0 && num_tokens <= hidden_.shape[0]);
+    assert(num_sampling_reqs >= 0 && num_sampling_reqs <= logits_.shape[0]);
+
+    auto with_rows = [](Tensor<2> tensor, int rows) {
+        tensor.shape[0] = rows;
+        return tensor;
+    };
+
+    return WorkspaceView{
+        .hidden = with_rows(hidden_, num_tokens),
+        .residual = with_rows(residual_, num_tokens),
+        .qkv = with_rows(qkv_, num_tokens),
+        .attn_out = with_rows(attn_out_, num_tokens),
+        .gate_up = with_rows(gate_up_, num_tokens),
+        .gated = with_rows(gated_, num_tokens),
+        .sampling_hidden = with_rows(sampling_hidden_, num_sampling_reqs),
+        .logits = with_rows(logits_, num_sampling_reqs)
     };
 }
 
