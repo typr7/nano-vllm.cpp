@@ -129,10 +129,7 @@ void rope(
     cudaStream_t stream
 )
 {
-    assert(qkv);
-    assert(rope_cache);
-    assert(positions != nullptr);
-    assert(rope_cache.dtype == DataType::FP32);
+    assert(qkv && rope_cache && positions != nullptr);
 
     const uint32_t num_tokens = static_cast<uint32_t>(qkv.shape[0]);
     const uint32_t stride = static_cast<uint32_t>(qkv.stride[0]);

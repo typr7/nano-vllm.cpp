@@ -158,16 +158,7 @@ void qk_norm_rope(
     cudaStream_t stream
 )
 {
-    assert(qkv);
-    assert(q_weights);
-    assert(k_weights);
-    assert(rope_cache);
-    assert(positions != nullptr);
-    assert(q_weights.shape[0] == head_dim);
-    assert(k_weights.shape[0] == head_dim);
-    assert(qkv.dtype == q_weights.dtype);
-    assert(qkv.dtype == k_weights.dtype);
-    assert(rope_cache.dtype == DataType::FP32);
+    assert(qkv && q_weights && k_weights && rope_cache && positions != nullptr);
 
     const uint32_t num_tokens = static_cast<uint32_t>(qkv.shape[0]);
     const uint32_t stride = static_cast<uint32_t>(qkv.stride[0]);

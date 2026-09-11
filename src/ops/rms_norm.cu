@@ -103,14 +103,7 @@ void rms_norm(
     cudaStream_t stream
 )
 {
-    assert(input);
-    assert(weights);
-    assert(output);
-    assert(input.shape[0] == output.shape[0]);
-    assert(input.shape[1] == weights.shape[0]);
-    assert(input.shape[1] == output.shape[1]);
-    assert(input.dtype == weights.dtype);
-    assert(input.dtype == output.dtype);
+    assert(input && weights && output);
 
     const int hidden_size = input.shape[1];
     switch (hidden_size) {

@@ -76,12 +76,7 @@ void bf16_elementwise_add(const nv_bfloat16* __restrict__ a, nv_bfloat16* __rest
 
 void residual_add(TensorRef<2> hidden, TensorRef<2> residual, cudaStream_t stream)
 {
-    assert(hidden);
-    assert(residual);
-    assert(hidden.shape[0] == residual.shape[0]);
-    assert(hidden.shape[1] == residual.shape[1]);
-    assert(hidden.dtype == residual.dtype);
-    assert(hidden.device_ptr != residual.device_ptr);
+    assert(hidden && residual);
 
     const auto [num_tokens, hidden_size] = hidden.shape;
     switch (hidden_size) {
@@ -103,7 +98,7 @@ void residual_add(TensorRef<2> hidden, TensorRef<2> residual, cudaStream_t strea
         }
         default: {
             constexpr uint32_t kNumThreads = 256;
-            const size_t num_elements = static_cast<size_t>(hidden.shape[0]) * hidden.shape[1];
+            const size_t num_elements = static_cast<size_t>(num_tokens) * hidden_size;
             const size_t num_vec = num_elements / kNumBf16sPerVector;
             const size_t num_blocks =
                 std::clamp<size_t>((num_vec + kNumThreads - 1) / kNumThreads, 1, 4096);

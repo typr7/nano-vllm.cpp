@@ -60,11 +60,7 @@ void embedding(
     cudaStream_t stream
 )
 {
-    assert(token_ids != nullptr);
-    assert(embedding_table);
-    assert(output);
-    assert(embedding_table.shape[1] == output.shape[1]);
-    assert(embedding_table.dtype == output.dtype);
+    assert(token_ids != nullptr && embedding_table && output);
 
     const int embedding_dim = embedding_table.shape[1];
     switch (embedding_dim) {

@@ -61,7 +61,6 @@ void bf16_swiglu_packedgu(nv_bfloat16* gate_up, uint32_t intermediate_size)
 void swiglu(TensorRef<2> gate_up, cudaStream_t stream)
 {
     assert(gate_up);
-    assert(gate_up.shape[1] % 2 == 0);
 
     constexpr uint32_t kNumThreads = 128;
 

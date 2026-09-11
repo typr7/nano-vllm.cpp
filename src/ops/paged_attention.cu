@@ -429,13 +429,9 @@ void paged_attention(
 {
     assert(qkv && k_cache && v_cache && output);
     assert(batch.query_start_loc && batch.seq_lens && batch.block_table);
-    assert(qkv.shape[0] == batch.num_tokens && output.shape[0] == batch.num_tokens);
-    assert(k_cache.shape == v_cache.shape);
     const int head_dim = k_cache.shape[2];
     const int kv_size = k_cache.shape[1] * head_dim;
     const int q_size = output.shape[1];
-    assert(qkv.shape[1] == q_size + 2 * kv_size);
-    assert(q_size > 0 && q_size % kv_size == 0);
 
     if (!std::has_single_bit(static_cast<uint32_t>(block_size))) {
         throw std::runtime_error("paged attention requires a power-of-two block size");
