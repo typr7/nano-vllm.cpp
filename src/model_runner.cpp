@@ -14,15 +14,8 @@
 namespace cllm
 {
 
-namespace
-{
-
-constexpr std::size_t INPUT_ALIGNMENT = 32;
-
-}
-
 ModelInput prepare_model_input(
-    const std::vector<RequestData>& scheduled,
+    const std::vector<ScheduledRequest>& scheduled,
     int block_size
 )
 {
@@ -32,7 +25,7 @@ ModelInput prepare_model_input(
 
     int num_tokens = 0;
     int max_num_blocks = 0;
-    for (const RequestData& request : scheduled) {
+    for (const ScheduledRequest& request : scheduled) {
         num_tokens += static_cast<int>(request.tokens_to_compute.size());
         max_num_blocks = std::max(
             max_num_blocks, static_cast<int>(request.allocated_blocks.size())
@@ -54,7 +47,7 @@ ModelInput prepare_model_input(
     input.query_start_loc.push_back(0);
 
     for (int i = 0; i < num_reqs; i++) {
-        const RequestData& request = scheduled[i];
+        const ScheduledRequest& request = scheduled[i];
         const int num_query_tokens = static_cast<int>(request.tokens_to_compute.size());
         assert(num_query_tokens > 0);
 
@@ -83,6 +76,7 @@ ModelInput prepare_model_input(
 
         if (request.needs_sampling) {
             input.logits_indices.push_back(static_cast<int>(input.token_ids.size()) - 1);
+            input.sample_params.push_back(request.sample_params);
             input.sampling_request_indices.push_back(i);
         }
     }
@@ -90,24 +84,17 @@ ModelInput prepare_model_input(
     return input;
 }
 
-// Everything below this line is device-side state. It lives here rather than in
-// model_runner.h so Executor and EngineCore stay free of CUDA headers.
-//
-// The members are grouped by lifetime, not by type:
-//   - ctx / weights   live for the whole process, created at construction
-//   - kv_cache        created after profiling, once num_blocks is known
-//   - the input_* and host_* buffers are per-step, but sized once from
-//     max_num_scheduled_tokens and reused, so no step allocates.
-//
-// ctx is passed by reference to layers and kernel launchers; they never see
-// Impl itself.
 struct ModelRunner::Impl
 {
     explicit Impl(const Config& config);
 
     void allocate_kv_cache(int num_blocks);
 
-    std::future<std::vector<SamplerOutput>> run_model(const std::vector<RequestData>& scheduled);
+    void run_model(const std::vector<ScheduledRequest>& scheduled);
+
+    std::vector<SampledToken> finish();
+
+    bool is_eos_token(int token_id) const noexcept;
 
     Config config;
 
@@ -117,18 +104,22 @@ struct ModelRunner::Impl
 
     CausalLM model;
 
+    Sampler sampler;
+
     // device buffer for activation
     Workspace workspace;
 
-    // dataflow: vector in ModelInput -> PinnedBuffer -> CudaDeviceBuffer
+    // Per-step H2D inputs and sampled token D2H output.
     BatchBuffer batch_buffer;
-
-    Sampler sampler;
 
     // allocated by allocate_kv_cache()
     KVCache kv_cache;
+
+    std::vector<SampledToken> inflight;
 };
 
+
+// ModelRunner::Impl
 ModelRunner::Impl::Impl(const Config& config)
     : config(config),
       model_config(ModelConfig::load(config.model_path)),
@@ -136,13 +127,13 @@ ModelRunner::Impl::Impl(const Config& config)
           std::filesystem::path(config.model_path) / "model.safetensors",
           model_config
       )),
+      sampler(config.max_num_seqs, model_config.vocab_size),
       workspace(Workspace::create(
           model_config,
           config.max_num_scheduled_tokens,
           config.max_num_seqs
       )),
-      batch_buffer(BatchBuffer::create(config, model_config)),
-      sampler(config.max_num_seqs, model_config.vocab_size)
+      batch_buffer(BatchBuffer::create(config, model_config))
 {
 }
 
@@ -151,24 +142,56 @@ void ModelRunner::Impl::allocate_kv_cache(int num_blocks)
     kv_cache = KVCache::create(model_config, num_blocks, config.block_size);
 }
 
-std::future<std::vector<SamplerOutput>> ModelRunner::Impl::run_model(
-    const std::vector<RequestData>& scheduled
-)
+void ModelRunner::Impl::run_model(const std::vector<ScheduledRequest>& scheduled)
 {
     const ModelInput input = prepare_model_input(scheduled, config.block_size);
-
     const ForwardBatch batch = batch_buffer.upload(input, context);
     const WorkspaceView workspace_view = workspace.view(batch.num_tokens, batch.num_sampling_reqs);
+
     model.forward(context, batch, kv_cache.view, workspace_view);
     model.compute_logits(context, batch, workspace_view);
-    sampler.sample(context, workspace_view.logits, scheduled, input.sampling_request_indices);
-    return std::async(std::launch::async, [this]() -> std::vector<SamplerOutput> {
-        context.synchronize();
+    sampler.sample(context, workspace_view.logits, batch);
+    batch_buffer.download_sampled_token_ids(batch.num_sampling_reqs, context);
 
-        return {};
-    });
+    inflight.clear();
+    inflight.reserve(input.sampling_request_indices.size());
+    for (int idx: input.sampling_request_indices) {
+        inflight.push_back({
+            .request_id = scheduled[idx].request_id,
+            .token_id = -1,
+            .eos_token = false
+        });
+    }
 }
 
+std::vector<SampledToken> ModelRunner::Impl::finish()
+{
+    context.synchronize();
+
+    const int* sampled_token_ids = batch_buffer.sampled_token_ids();
+    for (int i = 0; i < inflight.size(); i++) {
+        SampledToken& cur = inflight[i];
+        int token_id = sampled_token_ids[i];
+        cur.token_id = token_id;
+        cur.eos_token = is_eos_token(token_id);
+    }
+
+    return std::exchange(inflight, {});
+}
+
+bool ModelRunner::Impl::is_eos_token(int token_id) const noexcept
+{
+    return std::any_of(
+        model_config.eos_token_ids.begin(),
+        model_config.eos_token_ids.end(),
+        [token_id](int eos) {
+            return token_id == eos;
+        }
+    );
+}
+
+
+// ModelRunner
 ModelRunner::ModelRunner(const Config& cfg)
     : impl_(std::make_unique<Impl>(cfg))
 {
@@ -185,26 +208,34 @@ std::size_t ModelRunner::profile_available_kv_cache_memory(float gpu_memory_util
     return 0;
 }
 
-std::size_t ModelRunner::kv_cache_block_bytes() const noexcept
-{
-    return KVCache::block_bytes(impl_->model_config, impl_->config.block_size);
-}
-
 void ModelRunner::allocate_kv_cache(int num_blocks)
 {
     assert(num_blocks > 0);
     impl_->allocate_kv_cache(num_blocks);
 }
 
-std::future<std::vector<SamplerOutput>> ModelRunner::run_model(
-    const std::vector<RequestData>& scheduled
-)
+std::size_t ModelRunner::kv_cache_block_bytes() const noexcept
+{
+    return KVCache::block_bytes(impl_->model_config, impl_->config.block_size);
+}
+
+ModelConfig ModelRunner::model_config() const noexcept
+{
+    return impl_->model_config;
+}
+
+void ModelRunner::run_model(const std::vector<ScheduledRequest>& scheduled)
 {
     if (scheduled.empty()) {
-        return {};
+        return;
     }
 
-    return impl_->run_model(scheduled);
+    impl_->run_model(scheduled);
+}
+
+std::vector<SampledToken> ModelRunner::finish()
+{
+    return impl_->finish();
 }
 
 }

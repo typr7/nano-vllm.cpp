@@ -5,11 +5,15 @@
 
 #include <cuda_runtime.h>
 
-#include "request.h"
 #include "tensor.h"
 
 
-namespace cllm::ops
+namespace cllm
+{
+
+struct SampleParams;
+
+namespace ops
 {
 
 std::size_t sampler_workspace_size(int num_reqs, int vocab_size);
@@ -23,5 +27,7 @@ void sample(
     std::uint64_t offset,
     cudaStream_t stream
 );
+
+}
 
 }

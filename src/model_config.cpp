@@ -23,20 +23,20 @@ void from_json(const nlohmann::json& j, ModelConfig& cfg)
 {
     const auto arch = j.at("architectures").at(0).get<std::string>();
     if (arch == "Qwen3ForCausalLM") {
-        cfg.arch = ModelArch::QWEN3;
+        cfg.arch = ModelArch::kQwen3;
         cfg.has_qk_norm = true;
     } else if (arch == "LlamaForCausalLM") {
-        cfg.arch = ModelArch::LLAMA;
+        cfg.arch = ModelArch::kLlama;
         cfg.has_qk_norm = false;
     } else {
-        cfg.arch = ModelArch::UNSUPPORTED;
+        cfg.arch = ModelArch::kUnsupported;
     }
 
     const auto dtype = j.at("torch_dtype").get<std::string>();
     if (dtype == "bfloat16") {
-        cfg.dtype = DataType::BF16;
+        cfg.dtype = DataType::kBf16;
     } else {
-        cfg.dtype = DataType::UNSUPPORTED;
+        cfg.dtype = DataType::kUnsupported;
     }
 
     cfg.max_model_len = j.at("max_position_embeddings").get<int>();
@@ -92,11 +92,11 @@ ModelConfig ModelConfig::load(const std::filesystem::path& model_dir)
             ));
         }
 
-        if (model_config.arch == ModelArch::UNSUPPORTED) {
+        if (model_config.arch == ModelArch::kUnsupported) {
             throw std::runtime_error(std::format(
                 "unsupported model architecture in config `{}`", config_path.string()
             ));
-        } else if (model_config.dtype == DataType::UNSUPPORTED) {
+        } else if (model_config.dtype == DataType::kUnsupported) {
             throw std::runtime_error(std::format(
                 "unsupported data type in config `{}`", config_path.string()
             ));

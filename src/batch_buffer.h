@@ -18,6 +18,11 @@ public:
     static BatchBuffer create(const Config& config, const ModelConfig& model_config);
 
     ForwardBatch upload(const ModelInput& input, const CudaContext& context);
+    void download_sampled_token_ids(int num_sampled_tokens, const CudaContext& context);
+    const int* sampled_token_ids() const noexcept
+    {
+        return pinned_.data<int>();
+    }
 
 private:
     CudaDeviceBuffer device_;

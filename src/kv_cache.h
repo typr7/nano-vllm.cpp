@@ -12,7 +12,7 @@ namespace cllm
 struct KVCacheView
 {
     void* data = nullptr;
-    DataType dtype = DataType::UNSUPPORTED;
+    DataType dtype = DataType::kUnsupported;
 
     int num_layers = 0;
     int num_blocks = 0;

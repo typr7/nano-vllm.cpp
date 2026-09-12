@@ -3,26 +3,11 @@
 #include <string>
 #include <vector>
 
+#include "sample_params.h"
+
 
 namespace cllm
 {
-
-struct SampleParams
-{
-    float temperature;
-    int top_k;
-    float top_p;
-};
-
-// One token sampled for one request during one step.
-//
-// A request in the middle of a chunked prefill produces nothing, so this is
-// generally shorter than the scheduled batch.
-struct SamplerOutput
-{
-    std::string request_id;
-    int token_id;
-};
 
 struct Request
 {
@@ -40,11 +25,12 @@ struct Request
     int max_output_tokens;
 
     std::vector<int> token_ids;
+    std::vector<int> output_token_ids;
 
     SampleParams sample_params;
 };
 
-struct RequestData
+struct ScheduledRequest
 {
     std::string request_id;
 
@@ -60,6 +46,13 @@ struct RequestData
     std::vector<int> allocated_blocks;
 
     SampleParams sample_params;
+};
+
+struct SampledToken
+{
+    std::string request_id;
+    int token_id;
+    bool eos_token;
 };
 
 }

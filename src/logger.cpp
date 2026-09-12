@@ -18,11 +18,11 @@ const char* level_name(LogLevel level) noexcept
 {
     switch (level)
     {
-    case LogLevel::INFO:
+    case LogLevel::kInfo:
         return "INFO";
-    case LogLevel::ERROR:
+    case LogLevel::kError:
         return "ERROR";
-    case LogLevel::DEBUG:
+    case LogLevel::kDebug:
         return "DEBUG";
     }
 
@@ -44,7 +44,7 @@ void Logger::log(
 ) noexcept
 {
 #ifdef NDEBUG
-    if (level == LogLevel::DEBUG)
+    if (level == LogLevel::kDebug)
     {
         return;
     }
@@ -64,7 +64,7 @@ void Logger::log(
             source_file_name(location.file_name()),
             message
         );
-        std::ostream& output = level == LogLevel::ERROR ? std::cerr : std::cout;
+        std::ostream& output = level == LogLevel::kError ? std::cerr : std::cout;
 
         const std::lock_guard lock(log_mutex);
         output.write(content.data(), static_cast<std::streamsize>(content.size()));

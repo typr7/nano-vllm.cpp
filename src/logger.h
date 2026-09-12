@@ -9,9 +9,9 @@ namespace cllm
 
 enum class LogLevel
 {
-    INFO,
-    ERROR,
-    DEBUG,
+    kInfo,
+    kError,
+    kDebug,
 };
 
 class Logger
@@ -29,7 +29,7 @@ public:
         const std::source_location& location = std::source_location::current()
     ) noexcept
     {
-        log(LogLevel::INFO, message, location);
+        log(LogLevel::kInfo, message, location);
     }
 
     static void error(
@@ -37,7 +37,7 @@ public:
         const std::source_location& location = std::source_location::current()
     ) noexcept
     {
-        log(LogLevel::ERROR, message, location);
+        log(LogLevel::kError, message, location);
     }
 
     static void debug(
@@ -45,7 +45,7 @@ public:
         const std::source_location& location = std::source_location::current()
     ) noexcept
     {
-        log(LogLevel::DEBUG, message, location);
+        log(LogLevel::kDebug, message, location);
     }
 };
 

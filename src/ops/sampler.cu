@@ -8,6 +8,7 @@
 
 #include "sampler.h"
 #include "cuda_utils.h"
+#include "sample_params.h"
 #include "ops/utils.h"
 #include "util.h"
 
@@ -18,8 +19,8 @@ namespace cllm::ops
 namespace
 {
 
-constexpr int NUM_THREADS = 512;
-constexpr int TILE_SIZE = NUM_THREADS * 8;
+constexpr int kNumThreads = 512;
+constexpr int kTileSize = kNumThreads * 8;
 
 struct Range
 {
@@ -55,10 +56,10 @@ __device__ void histogram_add(int* histogram, unsigned digit, bool valid)
 
 __device__ int select_digit(int count, int& k)
 {
-    __shared__ typename cub::BlockScan<int, NUM_THREADS>::TempStorage storage;
+    __shared__ typename cub::BlockScan<int, kNumThreads>::TempStorage storage;
     __shared__ int2 selected;
     int prefix;
-    cub::BlockScan<int, NUM_THREADS>(storage).ExclusiveSum(count, prefix);
+    cub::BlockScan<int, kNumThreads>(storage).ExclusiveSum(count, prefix);
     if (prefix < k && k <= prefix + count) {
         selected = make_int2(255 - threadIdx.x, k - prefix);
     }
@@ -80,9 +81,9 @@ struct AddPair
 template <typename T, typename Op>
 __device__ T block_reduce(T value, Op op)
 {
-    __shared__ typename cub::BlockReduce<T, NUM_THREADS>::TempStorage storage;
+    __shared__ typename cub::BlockReduce<T, kNumThreads>::TempStorage storage;
     __shared__ T result;
-    value = cub::BlockReduce<T, NUM_THREADS>(storage).Reduce(value, op);
+    value = cub::BlockReduce<T, kNumThreads>(storage).Reduce(value, op);
     if (threadIdx.x == 0) {
         result = value;
     }
@@ -131,7 +132,7 @@ __device__ float4 load(const nv_bfloat16* values, int i, int size, float padding
 }
 
 template <bool kVectorized>
-__global__ __launch_bounds__(NUM_THREADS)
+__global__ __launch_bounds__(kNumThreads)
 void prepare_logits(
     const nv_bfloat16* logits,
     const SampleParams* params,
@@ -141,7 +142,7 @@ void prepare_logits(
 )
 {
     const std::size_t row = static_cast<std::size_t>(blockIdx.y) * vocab_size;
-    const int i = blockIdx.x * TILE_SIZE + threadIdx.x * 8;
+    const int i = blockIdx.x * kTileSize + threadIdx.x * 8;
     const SampleParams param = params[blockIdx.y];
     const bool greedy = param.temperature == 0.f;
     const bool top_k = !greedy && param.top_k > 1 && param.top_k < vocab_size;
@@ -180,7 +181,7 @@ void prepare_logits(
 }
 
 template <bool kVectorized>
-__global__ __launch_bounds__(NUM_THREADS)
+__global__ __launch_bounds__(kNumThreads)
 void sample_rows(
     const nv_bfloat16* logits,
     float* values,
@@ -199,7 +200,7 @@ void sample_rows(
     const nv_bfloat16* input = logits + static_cast<std::size_t>(blockIdx.x) * vocab_size;
     float* row = values + static_cast<std::size_t>(blockIdx.x) * vocab_size;
     Range range{-CUDART_INF_F, INT_MAX};
-    for (int i = tid; i < num_tiles; i += NUM_THREADS) {
+    for (int i = tid; i < num_tiles; i += kNumThreads) {
         range = MergeRange{}(range, ranges[blockIdx.x * num_tiles + i]);
     }
     range = block_reduce(range, MergeRange{});
@@ -230,7 +231,7 @@ void sample_rows(
             histogram[tid] = 0;
         }
         __syncthreads();
-        for (int base = 0; base < vocab_size; base += NUM_THREADS * 4) {
+        for (int base = 0; base < vocab_size; base += kNumThreads * 4) {
             const int i = base + tid * 4;
             const float4 v = i < vocab_size
                             ? load<kVectorized>(input, i, vocab_size, -CUDART_INF_F)
@@ -251,7 +252,7 @@ void sample_rows(
     const float inv_temperature = 1.f / param.temperature;
     const float scaled_max = range.high * inv_temperature;
     float thread_mass = 0.f;
-    for (int i = tid * 4; i < vocab_size; i += NUM_THREADS * 4) {
+    for (int i = tid * 4; i < vocab_size; i += kNumThreads * 4) {
         const float4 v = load<kVectorized>(input, i, vocab_size, -CUDART_INF_F);
         float x[4] = {v.x, v.y, v.z, v.w};
         #pragma unroll
@@ -283,7 +284,7 @@ void sample_rows(
     if (tid == 0) {
         curand_init(seed, offset + blockIdx.x, 0, &rng);
     }
-    __shared__ typename cub::BlockScan<float, NUM_THREADS>::TempStorage scan_storage;
+    __shared__ typename cub::BlockScan<float, kNumThreads>::TempStorage scan_storage;
     __shared__ float uniform;
     __shared__ int sampled;
     __shared__ int bucket;
@@ -295,7 +296,7 @@ void sample_rows(
     while (true) {
         float prefix;
         float total;
-        cub::BlockScan<float, NUM_THREADS>(scan_storage).ExclusiveSum(thread_mass, prefix, total);
+        cub::BlockScan<float, kNumThreads>(scan_storage).ExclusiveSum(thread_mass, prefix, total);
         if (first_round) {
             target_mass = param.top_p * total;
             first_round = false;
@@ -319,8 +320,8 @@ void sample_rows(
         __syncthreads();
         if (bucket != INT_MAX) {
             float bucket_draw = uniform - bucket_prefix;
-            for (int base = bucket * 4; base < vocab_size; base += NUM_THREADS * NUM_THREADS * 4) {
-                const int i = base + tid * NUM_THREADS * 4;
+            for (int base = bucket * 4; base < vocab_size; base += kNumThreads * kNumThreads * 4) {
+                const int i = base + tid * kNumThreads * 4;
                 const float4 v = i < vocab_size ? load<kVectorized>(row, i, vocab_size, 0.f)
                                                : make_float4(0.f, 0.f, 0.f, 0.f);
                 float x[4] = {v.x, v.y, v.z, v.w};
@@ -330,7 +331,7 @@ void sample_rows(
                     x[j] = x[j] > low ? x[j] : 0.f;
                     mass += x[j];
                 }
-                cub::BlockScan<float, NUM_THREADS>(scan_storage).ExclusiveSum(mass, prefix, total);
+                cub::BlockScan<float, kNumThreads>(scan_storage).ExclusiveSum(mass, prefix, total);
                 float remaining = bucket_draw - prefix;
                 #pragma unroll
                 for (int j = 0; j < 4; j++) {
@@ -358,7 +359,7 @@ void sample_rows(
         const float pivot = row[candidate];
         const float midpoint = (pivot + high) * 0.5f;
         float2 mass{0.f, 0.f};
-        for (int i = tid * 4; i < vocab_size; i += NUM_THREADS * 4) {
+        for (int i = tid * 4; i < vocab_size; i += kNumThreads * 4) {
             const float4 v = load<kVectorized>(row, i, vocab_size, 0.f);
             const float x[4] = {v.x, v.y, v.z, v.w};
             #pragma unroll
@@ -389,7 +390,7 @@ void sample_rows(
 
 std::size_t sampler_workspace_size(int num_reqs, int vocab_size)
 {
-    const int num_tiles = (vocab_size + TILE_SIZE - 1) / TILE_SIZE;
+    const int num_tiles = (vocab_size + kTileSize - 1) / kTileSize;
     return align_up<16>(static_cast<std::size_t>(num_reqs) * vocab_size * sizeof(float))
            + static_cast<std::size_t>(num_reqs) * num_tiles * (sizeof(Range) + 256 * sizeof(int));
 }
@@ -409,12 +410,12 @@ void sample(
         return;
     }
     assert(logits && params && output && workspace);
-    assert(logits.dtype == DataType::BF16);
+    assert(logits.dtype == DataType::kBf16);
     assert(logits.shape[1] > 0);
     assert(logits.stride[1] == 1 && logits.stride[0] == logits.shape[1]);
 
     const int vocab_size = logits.shape[1];
-    const int num_tiles = (vocab_size + TILE_SIZE - 1) / TILE_SIZE;
+    const int num_tiles = (vocab_size + kTileSize - 1) / kTileSize;
     auto* values = static_cast<float*>(workspace);
     auto* ranges = reinterpret_cast<Range*>(
         static_cast<std::byte*>(workspace)
@@ -424,21 +425,21 @@ void sample(
     const auto* input = static_cast<const nv_bfloat16*>(logits.device_ptr);
     const dim3 grid(num_tiles, num_reqs);
     if (vocab_size % 8 == 0) {
-        prepare_logits<true><<<grid, NUM_THREADS, 0, stream>>>(
+        prepare_logits<true><<<grid, kNumThreads, 0, stream>>>(
             input, params, ranges, histograms, vocab_size
         );
     } else {
-        prepare_logits<false><<<grid, NUM_THREADS, 0, stream>>>(
+        prepare_logits<false><<<grid, kNumThreads, 0, stream>>>(
             input, params, ranges, histograms, vocab_size
         );
     }
     CUDA_CHECK(cudaGetLastError());
     if (vocab_size % 4 == 0) {
-        sample_rows<true><<<num_reqs, NUM_THREADS, 0, stream>>>(
+        sample_rows<true><<<num_reqs, kNumThreads, 0, stream>>>(
             input, values, ranges, histograms, params, output, vocab_size, num_tiles, seed, offset
         );
     } else {
-        sample_rows<false><<<num_reqs, NUM_THREADS, 0, stream>>>(
+        sample_rows<false><<<num_reqs, kNumThreads, 0, stream>>>(
             input, values, ranges, histograms, params, output, vocab_size, num_tiles, seed, offset
         );
     }

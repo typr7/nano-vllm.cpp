@@ -49,6 +49,12 @@ public:
         return value;
     }
 
+    std::queue<T> drain()
+    {
+        std::lock_guard lock(mutex_);
+        return std::exchange(queue_, {});
+    }
+
     void close()
     {
         {

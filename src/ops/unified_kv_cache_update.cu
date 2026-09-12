@@ -71,7 +71,11 @@ void unified_kv_cache_update(
         ));
     }
 
-    const uint32_t num_threads = std::clamp<uint32_t>(kv_size / kNumBf16sPerVector, 1, 256);
+    const uint32_t num_threads = std::clamp<uint32_t>(
+        kv_size / kNumBf16sPerVector,
+        1,
+        kMaxNumThreads
+    );
     bf16_unified_kv_cache_update_packedqkv<<<num_tokens, num_threads, 0, stream>>>(
         k_cache.data<__nv_bfloat16>(),
         v_cache.data<__nv_bfloat16>(),

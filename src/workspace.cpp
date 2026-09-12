@@ -12,7 +12,7 @@ namespace cllm
 namespace
 {
 
-constexpr std::size_t ALIGNMENT = 256;
+constexpr std::size_t kAlignment = 256;
 
 }
 
@@ -34,7 +34,7 @@ Workspace Workspace::create(
     const std::size_t dtype_size = dtype_byte_size(config.dtype);
 
     auto reserve_tensor_bytes = [dtype_size](std::size_t& offset, std::size_t size) {
-        offset = align_up<ALIGNMENT>(offset);
+        offset = align_up<kAlignment>(offset);
         offset += size * dtype_size;
     };
 
@@ -66,7 +66,7 @@ Workspace Workspace::create(
     auto* base = data.data<std::byte>();
 
     auto place_view = [&](std::size_t& offset, std::size_t rows, std::size_t cols) {
-        offset = align_up<ALIGNMENT>(offset);
+        offset = align_up<kAlignment>(offset);
         auto* device_ptr = base + offset;
         offset += rows * cols * dtype_size;
         return make_tensor<2>(

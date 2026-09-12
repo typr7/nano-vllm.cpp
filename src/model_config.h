@@ -12,9 +12,9 @@ namespace cllm
 
 enum class ModelArch
 {
-    UNSUPPORTED,
-    LLAMA,  // Llama-3.2-1B
-    QWEN3,  // Qwen3-0.6B
+    kUnsupported,
+    kLlama,  // Llama-3.2-1B
+    kQwen3,  // Qwen3-0.6B
 };
 
 // Llama 3 rescales the low-frequency RoPE bands so the model generalizes past
@@ -30,7 +30,7 @@ struct RopeScaling
 struct ModelConfig
 {
     ModelArch arch;
-    DataType dtype = DataType::BF16;
+    DataType dtype = DataType::kBf16;
 
     int max_model_len;
     int vocab_size;

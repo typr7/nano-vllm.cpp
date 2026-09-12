@@ -9,15 +9,15 @@
 namespace cllm
 {
 
-template <int DIM>
+template <int kDim>
 struct Tensor
 {
-    static_assert(DIM > 0);
+    static_assert(kDim > 0);
 
     void* device_ptr = nullptr;
-    DataType dtype = DataType::UNSUPPORTED;
-    std::array<int, DIM> shape;
-    std::array<int, DIM> stride;
+    DataType dtype = DataType::kUnsupported;
+    std::array<int, kDim> shape;
+    std::array<int, kDim> stride;
 
     explicit operator bool() const noexcept { return device_ptr != nullptr; }
 
@@ -25,7 +25,7 @@ struct Tensor
     T* data() const
     {
         constexpr DataType expected = dtype_of<T>();
-        static_assert(expected != DataType::UNSUPPORTED);
+        static_assert(expected != DataType::kUnsupported);
         
         if (dtype != expected) {
             throw std::runtime_error("unmatched dtype");
@@ -35,15 +35,15 @@ struct Tensor
     }
 };
 
-template <int DIM>
-Tensor<DIM> make_tensor(
+template <int kDim>
+Tensor<kDim> make_tensor(
     void* device_ptr,
     DataType dtype,
-    const std::array<int, DIM>& shape,
-    const std::array<int, DIM>& stride
+    const std::array<int, kDim>& shape,
+    const std::array<int, kDim>& stride
 )
 {
-    return Tensor<DIM>{
+    return Tensor<kDim>{
         .device_ptr = device_ptr,
         .dtype = dtype,
         .shape = shape,
@@ -51,19 +51,19 @@ Tensor<DIM> make_tensor(
     };
 }
 
-template <int DIM>
-Tensor<DIM> make_tensor(void* device_ptr, DataType dtype, const std::array<int, DIM>& shape)
+template <int kDim>
+Tensor<kDim> make_tensor(void* device_ptr, DataType dtype, const std::array<int, kDim>& shape)
 {
-    std::array<int, DIM> stride;
+    std::array<int, kDim> stride;
     int s = 1;
-    for (int i = DIM - 1; i >= 0; i--) {
+    for (int i = kDim - 1; i >= 0; i--) {
         stride[i] = s;
         s *= shape[i];
     }
-    return make_tensor<DIM>(device_ptr, dtype, shape, stride);
+    return make_tensor<kDim>(device_ptr, dtype, shape, stride);
 }
 
-template <int DIM>
-using TensorRef = const Tensor<DIM>&;
+template <int kDim>
+using TensorRef = const Tensor<kDim>&;
 
 }

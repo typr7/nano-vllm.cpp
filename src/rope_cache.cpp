@@ -66,7 +66,7 @@ RopeCache RopeCache::create(const ModelConfig &config)
         .data = std::move(data),
         .view = make_tensor<3>(
             device_ptr,
-            DataType::FP32,
+            DataType::kFp32,
             {config.max_model_len, half_rotary_dim, 2}
         )
     };

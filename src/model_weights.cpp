@@ -23,9 +23,9 @@ namespace cllm
 namespace
 {
 
-constexpr std::size_t MAX_HEADER_SIZE = 100'000'000;
-constexpr std::size_t WEIGHT_ALIGNMENT = 256;
-constexpr std::size_t UPLOAD_CHUNK_SIZE = 16ULL * 1024 * 1024; // 16MiB
+constexpr std::size_t kMaxHeaderSize = 100'000'000;
+constexpr std::size_t kWeightAlignment = 256;
+constexpr std::size_t kUploadChunkSize = 16ULL * 1024 * 1024; // 16MiB
 
 struct CopyPlan
 {
@@ -34,8 +34,6 @@ struct CopyPlan
     std::size_t dst_offset;
     std::size_t byte_size;
 };
-
-
 
 std::pair<std::size_t, std::size_t> check_tensor_spec(
     const nlohmann::json& header,
@@ -121,7 +119,7 @@ std::vector<CopyPlan> build_plan(
 
         if (align) {
             // this is for cuda kernel performance
-            dst_offset = align_up<WEIGHT_ALIGNMENT>(dst_offset);
+            dst_offset = align_up<kWeightAlignment>(dst_offset);
         }
 
         plan.push_back(CopyPlan{
@@ -182,7 +180,7 @@ void upload(
         max_plan_copy = std::max(max_plan_copy, p.byte_size);
     }
 
-    std::vector<std::byte> buffer(std::min(max_plan_copy, UPLOAD_CHUNK_SIZE));
+    std::vector<std::byte> buffer(std::min(max_plan_copy, kUploadChunkSize));
     for (const auto& p: plans) {
         std::size_t file_offset = data_offset + p.src_offset;
         src_file.seekg(file_offset, std::ios::beg);
@@ -319,7 +317,7 @@ ModelWeights ModelWeights::load_from_safetensors(
         std::uint64_t header_size;
         if (
             !file.read(reinterpret_cast<char*>(&header_size), sizeof(header_size))
-            || header_size > MAX_HEADER_SIZE
+            || header_size > kMaxHeaderSize
         ) {
             throw std::runtime_error("invalid header size");
         }

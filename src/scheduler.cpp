@@ -8,11 +8,15 @@
 namespace cllm
 {
 
-Scheduler::Scheduler(const Config& config, const KVCacheConfig& kv_cache_config)
+Scheduler::Scheduler(
+    const Config& config,
+    const ModelConfig& model_config,
+    const KVCacheConfig& kv_cache_config
+)
     : kv_cache_manager_(kv_cache_config),
-      // max_model_len_(config.model_config.max_model_len),
+      max_num_seqs_(config.max_num_seqs),
       max_num_scheduled_tokens_(config.max_num_scheduled_tokens),
-      max_chunk_len_(config.max_chunk_len)
+      max_model_len_(model_config.max_model_len)
 {
 }
 
@@ -22,24 +26,23 @@ void Scheduler::add_request(Request request)
     request.num_prompt_tokens = num_tokens;
     request.num_prefill_tokens = num_tokens;
     request.num_computed_tokens = 0;
-    waiting_.push_back(std::move(request));
+    auto iter = waiting_.insert(waiting_.end(), std::move(request));
+    id_to_request_.emplace(iter->id, iter);
 }
 
-std::vector<RequestData> Scheduler::schedule()
+std::vector<ScheduledRequest> Scheduler::schedule()
 {
-    std::vector<RequestData> scheduled;
+    std::vector<ScheduledRequest> scheduled;
 
     int token_budget = max_num_scheduled_tokens_;
 
     // pass 1: running
     std::size_t num_preempted_before = preempted_.size();
     auto cur_iter = running_.begin();
-    while (cur_iter != running_.end() && token_budget > 0) {
+    while (cur_iter != running_.end() && token_budget > 0 && scheduled.size() < max_num_seqs_) {
         int num_tokens = static_cast<int>(cur_iter->token_ids.size());
         int num_scheduled_tokens = num_tokens - cur_iter->num_computed_tokens;
-        num_scheduled_tokens = std::min(
-            {num_scheduled_tokens, max_chunk_len_, token_budget}
-        );
+        num_scheduled_tokens = std::min(num_scheduled_tokens, token_budget);
         assert(num_scheduled_tokens > 0);
 
         // try assgin kv cache blocks to new tokens
@@ -70,7 +73,7 @@ std::vector<RequestData> Scheduler::schedule()
 
         const auto compute_begin = cur_iter->token_ids.begin() + cur_iter->num_computed_tokens;
         const int num_computed_after = cur_iter->num_computed_tokens + num_scheduled_tokens;
-        scheduled.push_back(RequestData{
+        scheduled.push_back({
             .request_id = cur_iter->id,
             .is_prefill = cur_iter->num_computed_tokens < cur_iter->num_prefill_tokens,
             .needs_sampling = num_computed_after >= cur_iter->num_prefill_tokens,
@@ -82,20 +85,23 @@ std::vector<RequestData> Scheduler::schedule()
             .allocated_blocks = kv_cache_manager_.get_allocated_blocks(cur_iter->id),
             .sample_params = cur_iter->sample_params
         });
+        cur_iter->num_computed_tokens = num_computed_after;
 
         cur_iter++;
     }
 
     if (preempted_.size() == num_preempted_before) {
         // pass 2: preempted and waiting
-        while ((!preempted_.empty() || !waiting_.empty()) && token_budget > 0) {
+        while (
+            (!preempted_.empty() || !waiting_.empty())
+            && token_budget > 0
+            && scheduled.size() < max_num_seqs_
+        ) {
             auto& request_queue = preempted_.empty() ? waiting_ : preempted_;
             auto cur_iter = request_queue.begin();
 
             int num_tokens = static_cast<int>(cur_iter->token_ids.size());
-            int num_scheduled_tokens = std::min(
-                {num_tokens, max_chunk_len_, token_budget}
-            );
+            int num_scheduled_tokens = std::min(num_tokens, token_budget);
             assert(num_scheduled_tokens > 0);
 
             if (!kv_cache_manager_.allocate_slots(*cur_iter, num_scheduled_tokens)) {
@@ -105,7 +111,7 @@ std::vector<RequestData> Scheduler::schedule()
             cur_iter->num_prefill_tokens = static_cast<int>(cur_iter->token_ids.size());
             token_budget -= num_scheduled_tokens;
 
-            scheduled.push_back(RequestData{
+            scheduled.push_back({
                 .request_id = cur_iter->id,
                 .is_prefill = true,
                 .needs_sampling = num_scheduled_tokens >= cur_iter->num_prefill_tokens,
@@ -117,12 +123,48 @@ std::vector<RequestData> Scheduler::schedule()
                 .allocated_blocks = kv_cache_manager_.get_allocated_blocks(cur_iter->id),
                 .sample_params = cur_iter->sample_params
             });
+            cur_iter->num_computed_tokens = num_scheduled_tokens;
 
             running_.splice(running_.end(), request_queue, cur_iter);
         }
     }
 
     return scheduled;
+}
+
+EngineCoreOutputs Scheduler::update(const std::vector<SampledToken>& sampled)
+{
+    EngineCoreOutputs outputs;
+    for (const auto& s: sampled) {
+        auto req = id_to_request_.at(s.request_id);
+        req->token_ids.push_back(s.token_id);
+        req->output_token_ids.push_back(s.token_id);
+        if (s.eos_token || reached_token_limit(*req)) {
+            EngineCoreOutput output = finish_request(req);
+            outputs.push_back(std::move(output));
+        }
+    }
+    return outputs;
+}
+
+EngineCoreOutput Scheduler::finish_request(RequestIterator request_iter)
+{
+    kv_cache_manager_.release_blocks(request_iter->id);
+    id_to_request_.erase(request_iter->id);
+    EngineCoreOutput output{
+        .request_id = std::move(request_iter->id),
+        .token_ids = std::move(request_iter->output_token_ids)
+    };
+    running_.erase(request_iter);
+    return output;
+}
+
+bool Scheduler::reached_token_limit(const Request& request) const noexcept
+{
+    return (
+        request.token_ids.size() >= max_model_len_
+        || request.output_token_ids.size() >= request.max_output_tokens
+    );
 }
 
 }
