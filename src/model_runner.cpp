@@ -3,6 +3,7 @@
 
 #include "model_runner.h"
 #include "cuda_context.h"
+#include "cuda_utils.h"
 #include "model_config.h"
 #include "forward_batch.h"
 #include "workspace.h"
@@ -86,15 +87,75 @@ ModelInput prepare_model_input(
 
 struct ModelRunner::Impl
 {
-    explicit Impl(const Config& config);
+    explicit Impl(const Config& config)
+        : config(config),
+          model_config(ModelConfig::load(config.model_path)),
+          model(model_config, ModelWeights::load_from_safetensors(
+              std::filesystem::path(config.model_path) / "model.safetensors",
+              model_config
+          )),
+          sampler(config.max_num_seqs, model_config.vocab_size),
+          workspace(Workspace::create(
+              model_config,
+              config.max_num_scheduled_tokens,
+              config.max_num_seqs
+          )),
+          batch_buffer(BatchBuffer::create(config, model_config))
+        {
+        }
 
-    void allocate_kv_cache(int num_blocks);
+    void allocate_kv_cache(int num_blocks)
+    {
+        kv_cache = KVCache::create(model_config, num_blocks, config.block_size);
+    }
 
-    void run_model(const std::vector<ScheduledRequest>& scheduled);
+    void run_model(const std::vector<ScheduledRequest>& scheduled)
+    {
+        const ModelInput input = prepare_model_input(scheduled, config.block_size);
+        const ForwardBatch batch = batch_buffer.upload(input, context);
+        const WorkspaceView workspace_view = workspace.view(batch.num_tokens, batch.num_sampling_reqs);
 
-    std::vector<SampledToken> finish();
+        model.forward(context, batch, kv_cache.view, workspace_view);
+        model.compute_logits(context, batch, workspace_view);
+        sampler.sample(context, workspace_view.logits, batch);
+        batch_buffer.download_sampled_token_ids(batch.num_sampling_reqs, context);
 
-    bool is_eos_token(int token_id) const noexcept;
+        inflight.clear();
+        inflight.reserve(input.sampling_request_indices.size());
+        for (int idx: input.sampling_request_indices) {
+            inflight.push_back({
+                .request_id = scheduled[idx].request_id,
+                .token_id = -1,
+                .eos_token = false
+            });
+        }
+    }
+
+    std::vector<SampledToken> finish()
+    {
+        context.synchronize();
+
+        const int* sampled_token_ids = batch_buffer.sampled_token_ids();
+        for (int i = 0; i < inflight.size(); i++) {
+            SampledToken& cur = inflight[i];
+            int token_id = sampled_token_ids[i];
+            cur.token_id = token_id;
+            cur.eos_token = is_eos_token(token_id);
+        }
+
+        return std::exchange(inflight, {});
+    }
+
+    bool is_eos_token(int token_id) const noexcept
+    {
+        return std::any_of(
+            model_config.eos_token_ids.begin(),
+            model_config.eos_token_ids.end(),
+            [token_id](int eos) {
+                return token_id == eos;
+            }
+        );
+    }
 
     Config config;
 
@@ -119,78 +180,6 @@ struct ModelRunner::Impl
 };
 
 
-// ModelRunner::Impl
-ModelRunner::Impl::Impl(const Config& config)
-    : config(config),
-      model_config(ModelConfig::load(config.model_path)),
-      model(model_config, ModelWeights::load_from_safetensors(
-          std::filesystem::path(config.model_path) / "model.safetensors",
-          model_config
-      )),
-      sampler(config.max_num_seqs, model_config.vocab_size),
-      workspace(Workspace::create(
-          model_config,
-          config.max_num_scheduled_tokens,
-          config.max_num_seqs
-      )),
-      batch_buffer(BatchBuffer::create(config, model_config))
-{
-}
-
-void ModelRunner::Impl::allocate_kv_cache(int num_blocks)
-{
-    kv_cache = KVCache::create(model_config, num_blocks, config.block_size);
-}
-
-void ModelRunner::Impl::run_model(const std::vector<ScheduledRequest>& scheduled)
-{
-    const ModelInput input = prepare_model_input(scheduled, config.block_size);
-    const ForwardBatch batch = batch_buffer.upload(input, context);
-    const WorkspaceView workspace_view = workspace.view(batch.num_tokens, batch.num_sampling_reqs);
-
-    model.forward(context, batch, kv_cache.view, workspace_view);
-    model.compute_logits(context, batch, workspace_view);
-    sampler.sample(context, workspace_view.logits, batch);
-    batch_buffer.download_sampled_token_ids(batch.num_sampling_reqs, context);
-
-    inflight.clear();
-    inflight.reserve(input.sampling_request_indices.size());
-    for (int idx: input.sampling_request_indices) {
-        inflight.push_back({
-            .request_id = scheduled[idx].request_id,
-            .token_id = -1,
-            .eos_token = false
-        });
-    }
-}
-
-std::vector<SampledToken> ModelRunner::Impl::finish()
-{
-    context.synchronize();
-
-    const int* sampled_token_ids = batch_buffer.sampled_token_ids();
-    for (int i = 0; i < inflight.size(); i++) {
-        SampledToken& cur = inflight[i];
-        int token_id = sampled_token_ids[i];
-        cur.token_id = token_id;
-        cur.eos_token = is_eos_token(token_id);
-    }
-
-    return std::exchange(inflight, {});
-}
-
-bool ModelRunner::Impl::is_eos_token(int token_id) const noexcept
-{
-    return std::any_of(
-        model_config.eos_token_ids.begin(),
-        model_config.eos_token_ids.end(),
-        [token_id](int eos) {
-            return token_id == eos;
-        }
-    );
-}
-
-
 // ModelRunner
 ModelRunner::ModelRunner(const Config& cfg)
     : impl_(std::make_unique<Impl>(cfg))
@@ -201,11 +190,13 @@ ModelRunner::~ModelRunner() noexcept = default;
 
 std::size_t ModelRunner::profile_available_kv_cache_memory(float gpu_memory_utilization)
 {
-    // TODO: run a dummy forward pass at max_num_scheduled_tokens so peak
-    // activation memory is touched, then derive the remaining budget from
-    // cudaMemGetInfo.
-    (void)gpu_memory_utilization;
-    return 0;
+    std::size_t free_bytes = 0;
+    std::size_t total_bytes = 0;
+    CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+
+    const std::size_t used_bytes = total_bytes - free_bytes;
+    const auto budget = static_cast<std::size_t>(total_bytes * gpu_memory_utilization);
+    return budget > used_bytes ? budget - used_bytes : 0;
 }
 
 void ModelRunner::allocate_kv_cache(int num_blocks)
