@@ -18,19 +18,33 @@ PYBIND11_MODULE(_C, module)
 
     py::class_<cllm::Addresses>(module, "EngineCoreAddresses")
         .def(py::init<>())
-        .def_readwrite("handshake_address", &cllm::Addresses::handshake_address)
         .def_readwrite("input_address", &cllm::Addresses::input_address)
         .def_readwrite("output_address", &cllm::Addresses::output_address);
 
-    py::enum_<cllm::EngineCoreShutdownReason>(module, "EngineCoreShutdownReason")
-        .value("kShutdown", cllm::EngineCoreShutdownReason::kShutdown)
-        .value("kEngineCoreDead", cllm::EngineCoreShutdownReason::kEngineCoreDead);
+    // Wire protocol tags, so the frontend never hardcodes the byte values.
+    py::enum_<cllm::RequestType>(module, "RequestType")
+        .value("ADD", cllm::RequestType::kAdd)
+        .value("ABORT", cllm::RequestType::kAbort)
+        .value("SHUTDOWN", cllm::RequestType::kShutdown);
 
-    py::class_<cllm::EngineCore>(module, "EngineCore").def_static(
-        "run",
-        &cllm::EngineCore::run,
+    py::enum_<cllm::OutputType>(module, "OutputType")
+        .value("READY", cllm::OutputType::kReady)
+        .value("OUTPUTS", cllm::OutputType::kOutputs);
+
+    py::enum_<cllm::FinishReason>(module, "FinishReason")
+        .value("RUNNING", cllm::FinishReason::kRunning)
+        .value("STOP", cllm::FinishReason::kStop)
+        .value("LENGTH", cllm::FinishReason::kLength);
+
+    py::enum_<cllm::EngineCoreShutdownReason>(module, "EngineCoreShutdownReason")
+        .value("SHUTDOWN", cllm::EngineCoreShutdownReason::kShutdown)
+        .value("ENGINE_CORE_DEAD", cllm::EngineCoreShutdownReason::kEngineCoreDead);
+
+    module.def(
+        "run_engine_core",
+        &cllm::run_engine_core,
         py::call_guard<py::gil_scoped_release>(),
-        py::arg("cfg"),
+        py::arg("config"),
         py::arg("addresses")
     );
 }
