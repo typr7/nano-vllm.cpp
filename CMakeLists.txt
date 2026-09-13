@@ -23,7 +23,6 @@ add_library(cllm_core STATIC
     src/batch_buffer.cpp
     src/model_weights.cpp
     src/kv_cache.cpp
-    src/executor.cpp
     src/pinned_buffer.cpp
     src/rope_cache.cpp
     src/scheduler.cpp
