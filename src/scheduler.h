@@ -1,6 +1,8 @@
 #pragma once
 
 #include <list>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "config.h"
@@ -30,14 +32,20 @@ public:
 
     void add_request(Request request);
 
+    void abort_requests(const std::vector<std::string>& request_ids);
+
+    bool has_requests() const noexcept;
+
     std::vector<ScheduledRequest> schedule();
 
     EngineCoreOutputs update(const std::vector<SampledToken>& sampled);
 
 private:
-    EngineCoreOutput finish_request(RequestIterator request_iter);
+    void remove_request(RequestIterator request_iter);
 
-    bool reached_token_limit(const Request& request) const noexcept;
+    RequestList& queue_of(RequestStatus status) noexcept;
+
+    FinishReason finish_reason(const Request& request, bool eos_token) const noexcept;
 
 private:
     RequestList running_;

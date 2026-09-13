@@ -23,11 +23,27 @@ Scheduler::Scheduler(
 void Scheduler::add_request(Request request)
 {
     int num_tokens = static_cast<int>(request.token_ids.size());
+    request.status = RequestStatus::kWaiting;
     request.num_prompt_tokens = num_tokens;
     request.num_prefill_tokens = num_tokens;
     request.num_computed_tokens = 0;
     auto iter = waiting_.insert(waiting_.end(), std::move(request));
     id_to_request_.emplace(iter->id, iter);
+}
+
+void Scheduler::abort_requests(const std::vector<std::string>& request_ids)
+{
+    for (const auto& id: request_ids) {
+        auto found = id_to_request_.find(id);
+        if (found != id_to_request_.end()) {
+            remove_request(found->second);
+        }
+    }
+}
+
+bool Scheduler::has_requests() const noexcept
+{
+    return !id_to_request_.empty();
 }
 
 std::vector<ScheduledRequest> Scheduler::schedule()
@@ -57,6 +73,7 @@ std::vector<ScheduledRequest> Scheduler::schedule()
 
             kv_cache_manager_.release_blocks(preempted_iter->id);
             preempted_iter->num_computed_tokens = 0;
+            preempted_iter->status = RequestStatus::kPreempted;
 
             preempted_.splice(preempted_.begin(), running_, preempted_iter);
 
@@ -124,6 +141,7 @@ std::vector<ScheduledRequest> Scheduler::schedule()
                 .sample_params = cur_iter->sample_params
             });
             cur_iter->num_computed_tokens = num_scheduled_tokens;
+            cur_iter->status = RequestStatus::kRunning;
 
             running_.splice(running_.end(), request_queue, cur_iter);
         }
@@ -135,36 +153,64 @@ std::vector<ScheduledRequest> Scheduler::schedule()
 EngineCoreOutputs Scheduler::update(const std::vector<SampledToken>& sampled)
 {
     EngineCoreOutputs outputs;
+    outputs.reserve(sampled.size());
+
     for (const auto& s: sampled) {
         auto req = id_to_request_.at(s.request_id);
         req->token_ids.push_back(s.token_id);
-        req->output_token_ids.push_back(s.token_id);
-        if (s.eos_token || reached_token_limit(*req)) {
-            EngineCoreOutput output = finish_request(req);
-            outputs.push_back(std::move(output));
+
+        FinishReason reason = finish_reason(*req, s.eos_token);
+        outputs.push_back({
+            .request_id = s.request_id,
+            .new_token_ids = {s.token_id},
+            .finish_reason = reason
+        });
+
+        if (reason != FinishReason::kRunning) {
+            remove_request(req);
         }
     }
+
     return outputs;
 }
 
-EngineCoreOutput Scheduler::finish_request(RequestIterator request_iter)
+void Scheduler::remove_request(RequestIterator request_iter)
 {
-    kv_cache_manager_.release_blocks(request_iter->id);
+    // Only running requests hold kv cache blocks; preemption already released
+    // them and waiting requests never had any.
+    if (request_iter->status == RequestStatus::kRunning) {
+        kv_cache_manager_.release_blocks(request_iter->id);
+    }
     id_to_request_.erase(request_iter->id);
-    EngineCoreOutput output{
-        .request_id = std::move(request_iter->id),
-        .token_ids = std::move(request_iter->output_token_ids)
-    };
-    running_.erase(request_iter);
-    return output;
+    queue_of(request_iter->status).erase(request_iter);
 }
 
-bool Scheduler::reached_token_limit(const Request& request) const noexcept
+RequestList& Scheduler::queue_of(RequestStatus status) noexcept
 {
-    return (
-        request.token_ids.size() >= max_model_len_
-        || request.output_token_ids.size() >= request.max_output_tokens
-    );
+    switch (status) {
+        case RequestStatus::kRunning:
+            return running_;
+        case RequestStatus::kPreempted:
+            return preempted_;
+        case RequestStatus::kWaiting:
+            break;
+    }
+    return waiting_;
+}
+
+FinishReason Scheduler::finish_reason(const Request& request, bool eos_token) const noexcept
+{
+    if (eos_token) {
+        return FinishReason::kStop;
+    }
+
+    int num_tokens = static_cast<int>(request.token_ids.size());
+    int num_output_tokens = num_tokens - request.num_prompt_tokens;
+    if (num_output_tokens >= request.max_output_tokens || num_tokens >= max_model_len_) {
+        return FinishReason::kLength;
+    }
+
+    return FinishReason::kRunning;
 }
 
 }

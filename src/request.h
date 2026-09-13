@@ -9,9 +9,18 @@
 namespace cllm
 {
 
+enum class RequestStatus
+{
+    kWaiting,
+    kRunning,
+    kPreempted,
+};
+
 struct Request
 {
     std::string id;
+
+    RequestStatus status;
 
     int num_prompt_tokens;
 
@@ -24,8 +33,8 @@ struct Request
 
     int max_output_tokens;
 
+    // prompt tokens followed by every sampled token
     std::vector<int> token_ids;
-    std::vector<int> output_token_ids;
 
     SampleParams sample_params;
 };
