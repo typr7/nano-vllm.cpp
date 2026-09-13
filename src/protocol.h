@@ -1,29 +1,44 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <msgpack.hpp>
 
+#include "request.h"
+
 
 namespace cllm
 {
-
-inline constexpr std::string kEngineCoreReady{"READY"};
-inline constexpr std::string kEngineCoreInitFailed{"INIT_FAILED"};
 
 class ProtocolError: public std::runtime_error
 {
     using std::runtime_error::runtime_error;
 };
 
+// Frontend -> engine core. Every message is a zmq multipart message:
+// [RequestType as one byte][msgpack payload, omitted for kShutdown].
 enum class RequestType: std::uint8_t
 {
-    kAdd = 0,
-    kShutdown = 1,
+    kAdd = 0,       // payload: EngineCoreRequest
+    kAbort = 1,     // payload: std::vector<std::string> of request ids
+    kShutdown = 2,  // no payload
 };
 
+// Engine core -> frontend. Every message is a zmq multipart message:
+// [OutputType as one byte][msgpack payload, omitted for kReady].
+enum class OutputType: std::uint8_t
+{
+    kReady = 0,     // no payload, sent once after the model is loaded
+    kOutputs = 1,   // payload: EngineCoreOutputs
+};
+
+// The frontend validates requests before sending them: max_output_tokens > 0,
+// 0 < token_ids.size() < max_model_len, and sampling parameters in range. The
+// engine core trusts what it receives.
 struct EngineCoreRequest
 {
     std::string request_id;
@@ -38,19 +53,30 @@ struct EngineCoreRequest
     MSGPACK_DEFINE_MAP(request_id, max_output_tokens, temperature, top_k, top_p, token_ids);
 };
 
+enum class FinishReason: std::uint8_t
+{
+    kRunning = 0,
+    kStop = 1,      // sampled an eos token, which is the last of new_token_ids
+    kLength = 2,    // reached max_output_tokens or max_model_len
+};
+
+// One entry per request per step. Every added request eventually produces
+// exactly one output whose finish_reason is not kRunning, unless the frontend
+// aborts it first.
 struct EngineCoreOutput
 {
     std::string request_id;
-    std::vector<int> token_ids;
+    std::vector<int> new_token_ids;
+    FinishReason finish_reason = FinishReason::kRunning;
 
-    MSGPACK_DEFINE_MAP(request_id, token_ids);
+    MSGPACK_DEFINE_MAP(request_id, new_token_ids, finish_reason);
 };
 
 using EngineCoreOutputs = std::vector<EngineCoreOutput>;
 
+// The frontend binds both addresses; the engine core connects to them.
 struct Addresses
 {
-    std::string handshake_address;
     std::string input_address;
     std::string output_address;
 };
@@ -61,15 +87,20 @@ enum class EngineCoreShutdownReason
     kEngineCoreDead
 };
 
-inline bool validate_request(const EngineCoreRequest& request, int max_model_len) {
-    std::size_t num_tokens = request.token_ids.size();
-    return (
-        request.max_output_tokens > 0
-        && (request.temperature >= 0.f && request.temperature <= 1.f)
-        && (request.top_k >= 0 && request.top_k <= 50)
-        && (request.top_p > 0.f && request.top_p <= 1.f)
-        && (num_tokens > 0 && num_tokens < max_model_len)
-    );
+inline Request to_request(EngineCoreRequest request)
+{
+    return Request{
+        .id = std::move(request.request_id),
+        .max_output_tokens = request.max_output_tokens,
+        .token_ids = std::move(request.token_ids),
+        .sample_params = SampleParams{
+            .temperature = request.temperature,
+            .top_k = request.top_k,
+            .top_p = request.top_p
+        }
+    };
 }
 
 }
+
+MSGPACK_ADD_ENUM(cllm::FinishReason);
